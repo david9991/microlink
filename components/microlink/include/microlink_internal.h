@@ -480,6 +480,13 @@ static inline bool ml_stopping(microlink_t *ml, uint32_t ms) {
  * a tcpip_callback/tcpip_api_call wait with it held: they take it too.
  * Without CONFIG_LWIP_TCPIP_CORE_LOCKING there is no such lock, and both do
  * nothing. */
+/* A packet WireGuard decrypts goes to tcpip_input with the core lock held
+ * (on lwIP's thread, or under ml_lwip_lock): with core-locked input,
+ * tcpip_input would take the lock again, and it does not nest. */
+#if LWIP_TCPIP_CORE_LOCKING_INPUT
+#error "MicroLink: CONFIG_LWIP_TCPIP_CORE_LOCKING_INPUT must be off"
+#endif
+
 static inline bool ml_lwip_lock(void) {
 #if LWIP_TCPIP_CORE_LOCKING
     if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) return false;
