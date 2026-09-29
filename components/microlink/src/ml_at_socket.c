@@ -1263,6 +1263,29 @@ int ml_at_select(int nfds, fd_set *readfds, fd_set *writefds,
  * DNS Resolution
  * ========================================================================== */
 
+/* One IPv6 answer, as getaddrinfo gives it */
+static int addrinfo_in6(const struct in6_addr *addr6, const char *service,
+                        const struct addrinfo *hints, struct addrinfo **res)
+{
+    struct addrinfo *ai = calloc(1, sizeof(struct addrinfo) + sizeof(struct sockaddr_in6));
+    if (!ai) return EAI_MEMORY;
+
+    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)(ai + 1);
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_addr = *addr6;
+    if (service) sin6->sin6_port = htons(atoi(service));
+
+    ai->ai_family = AF_INET6;
+    ai->ai_socktype = hints ? hints->ai_socktype : SOCK_STREAM;
+    ai->ai_protocol = hints ? hints->ai_protocol : 0;
+    ai->ai_addrlen = sizeof(struct sockaddr_in6);
+    ai->ai_addr = (struct sockaddr *)sin6;
+    ai->ai_next = NULL;
+
+    *res = ai;
+    return 0;
+}
+
 int ml_at_getaddrinfo(const char *hostname, const char *service,
                        const struct addrinfo *hints, struct addrinfo **res)
 {
@@ -1270,6 +1293,13 @@ int ml_at_getaddrinfo(const char *hostname, const char *service,
     if (!hostname) return EAI_NONAME;
 
     *res = NULL;
+
+    /* AT+CDNSGIP cannot be asked for one family. What asks for IPv6 alone
+     * is refused — nothing dials an IPv6-only address over the AT socket
+     * (the DERP client skips an IPv6-only relay while it is the transport)
+     * — and what asks for IPv4 is answered with IPv4 only. */
+    const int family = hints ? hints->ai_family : AF_UNSPEC;
+    if (family != AF_UNSPEC && family != AF_INET) return EAI_FAMILY;
 
     /* Check if hostname is already an IP address */
     struct in_addr test_addr;
@@ -1292,6 +1322,14 @@ int ml_at_getaddrinfo(const char *hostname, const char *service,
 
         *res = ai;
         return 0;
+    }
+
+    /* An IPv6 literal is never sent to AT+CDNSGIP: it is its own answer,
+     * and no answer to what asks for IPv4 */
+    struct in6_addr addr6;
+    if (inet_pton(AF_INET6, hostname, &addr6) == 1) {
+        if (family == AF_INET) return EAI_FAMILY;
+        return addrinfo_in6(&addr6, service, hints, res);
     }
 
     /* Resolve via AT+CDNSGIP — this is an ASYNC command.
@@ -1380,29 +1418,11 @@ int ml_at_getaddrinfo(const char *hostname, const char *service,
         }
     }
 
-    /* Second pass: no IPv4 found — try IPv6 */
-    struct in6_addr addr6;
-    for (int i = 0; i < ip_count; i++) {
+    /* Second pass: no IPv4 found — try IPv6, unless IPv4 was asked for */
+    for (int i = 0; family == AF_UNSPEC && i < ip_count; i++) {
         if (inet_pton(AF_INET6, ips[i], &addr6) == 1) {
             ESP_LOGI(TAG, "DNS: %s -> %s (IPv6)", hostname, ips[i]);
-
-            struct addrinfo *ai = calloc(1, sizeof(struct addrinfo) + sizeof(struct sockaddr_in6));
-            if (!ai) return EAI_MEMORY;
-
-            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)(ai + 1);
-            sin6->sin6_family = AF_INET6;
-            sin6->sin6_addr = addr6;
-            if (service) sin6->sin6_port = htons(atoi(service));
-
-            ai->ai_family = AF_INET6;
-            ai->ai_socktype = hints ? hints->ai_socktype : SOCK_STREAM;
-            ai->ai_protocol = hints ? hints->ai_protocol : 0;
-            ai->ai_addrlen = sizeof(struct sockaddr_in6);
-            ai->ai_addr = (struct sockaddr *)sin6;
-            ai->ai_next = NULL;
-
-            *res = ai;
-            return 0;
+            return addrinfo_in6(&addr6, service, hints, res);
         }
     }
 

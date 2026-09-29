@@ -702,12 +702,16 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
             if (region->region_id != ml->derp_home_region) continue;
             /* The first node that can be dialled (the preferred node): the
              * one most peers use. A region with none is not dialled at all —
-             * never the default relay in its place. */
+             * never the default relay in its place. Over the modem's AT
+             * socket, which resolves nothing for IPv6 alone, a node reachable
+             * over IPv6 alone cannot be. */
             const int nodes = region->node_count < ML_MAX_DERP_NODES
                                   ? region->node_count : ML_MAX_DERP_NODES;
-            if (ml_derp_pick(region->nodes, nodes, true, &pick) < 0) {
-                ESP_LOGE(TAG, "DERP region %d: none of its %d nodes can be dialled",
-                         (int)ml->derp_home_region, nodes);
+            const bool at = ml_at_socket_is_ready();
+            if (ml_derp_pick(region->nodes, nodes, !at, &pick) < 0) {
+                ESP_LOGE(TAG, "DERP region %d: none of its %d nodes can be dialled%s",
+                         (int)ml->derp_home_region, nodes,
+                         at ? " (over the cellular modem: none over IPv6 alone)" : "");
                 return ESP_FAIL;
             }
             break;

@@ -165,7 +165,10 @@ int ml_at_select(int nfds, fd_set *readfds, fd_set *writefds,
 
 /**
  * Resolve hostname using AT+CDNSGIP.
- * Compatible with getaddrinfo() return format.
+ * Compatible with getaddrinfo() return format. hints->ai_family AF_INET
+ * answers IPv4 only; AF_UNSPEC (or no hints) IPv4, else IPv6; any other
+ * family, AF_INET6 among them, fails EAI_FAMILY. An IP literal is its own
+ * answer and never sent to the modem.
  *
  * @return 0 on success, EAI_* error code on failure
  */
