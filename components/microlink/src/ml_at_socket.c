@@ -744,8 +744,8 @@ int ml_at_connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
     ml_at_sock_t *s = fd_to_sock(fd);
     if (!s) { errno = EBADF; return -1; }
 
-    char ip_str[INET6_ADDRSTRLEN];  /* 46 bytes — fits IPv4 and IPv6 */
-    uint16_t port;
+    char ip_str[INET6_ADDRSTRLEN] = "";  /* 46 bytes — fits IPv4 and IPv6 */
+    uint16_t port = 0;
     sockaddr_to_str(addr, ip_str, sizeof(ip_str), &port);
 
     const char *proto = (s->type == SOCK_STREAM) ? "TCP" : "UDP";
@@ -982,8 +982,8 @@ ssize_t ml_at_sendto(int fd, const void *buf, size_t len, int flags,
         return ml_at_send(fd, buf, len, flags);
     }
 
-    char ip_str[INET6_ADDRSTRLEN];  /* 46 bytes — fits IPv4 and IPv6 */
-    uint16_t port;
+    char ip_str[INET6_ADDRSTRLEN] = "";  /* 46 bytes — fits IPv4 and IPv6 */
+    uint16_t port = 0;
     sockaddr_to_str(dest_addr, ip_str, sizeof(ip_str), &port);
 
     /* For UDP, if not yet "connected" (CIPOPEN), open it first */
