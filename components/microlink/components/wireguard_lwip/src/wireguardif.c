@@ -65,6 +65,36 @@ static const char *TAG = "wireguard";
 
 #define WIREGUARDIF_TIMER_MSECS 400
 
+// A WARN line another node's traffic can repeat -- a node this device has no
+// peer for retries its handshake every 5 s -- is printed at most once a
+// minute per line, with how many were held back since the last one.
+#define WG_RX_WARN_MS 60000
+
+typedef struct {
+	uint32_t last_ms;	// 0: never printed
+	uint32_t held;
+} wg_rx_warn_t;
+
+static bool wg_rx_warn_due(wg_rx_warn_t *w, uint32_t *held) {
+	const uint32_t now = wireguard_sys_now();
+	if (w->last_ms != 0 && now - w->last_ms < WG_RX_WARN_MS) {
+		w->held++;
+		return false;
+	}
+	w->last_ms = now ? now : 1;
+	*held = w->held;
+	w->held = 0;
+	return true;
+}
+
+#define WG_RX_WARN(fmt, ...) do { \
+		static wg_rx_warn_t wg_rx_warn_; \
+		uint32_t wg_rx_held_; \
+		if (wg_rx_warn_due(&wg_rx_warn_, &wg_rx_held_)) { \
+			ESP_LOGW(TAG, fmt " (%lu more held back)", ##__VA_ARGS__, (unsigned long)wg_rx_held_); \
+		} \
+	} while (0)
+
 // Forward declaration for timer cancellation in wireguardif_shutdown
 static void wireguardif_tmr(void *arg);
 
@@ -398,7 +428,7 @@ static void wireguardif_process_response_message(struct wireguard_device *device
 		ESP_LOGI(TAG, "[WG] *** WIREGUARD SESSION ESTABLISHED wg_idx=%u ***", wg_idx);
 	} else {
 		// Packet bad
-		ESP_LOGW(TAG, "[WG] Handshake response INVALID (crypto failed)");
+		WG_RX_WARN("[WG] Handshake response INVALID (crypto failed)");
 	}
 }
 
@@ -804,10 +834,10 @@ void wireguardif_network_rx(void *arg, struct udp_pcb *pcb, struct pbuf *p, cons
 						peer->port = saved_port;
 					}
 				} else {
-					ESP_LOGW(TAG, "[WG_RX] Initiation process FAILED (bad keys/timestamp?)");
+					WG_RX_WARN("[WG_RX] Initiation process FAILED (unknown peer, or bad keys/timestamp)");
 				}
 			} else {
-				ESP_LOGW(TAG, "[WG_RX] Initiation MAC check FAILED");
+				WG_RX_WARN("[WG_RX] Initiation MAC check FAILED");
 			}
 			break;
 
@@ -826,10 +856,10 @@ void wireguardif_network_rx(void *arg, struct udp_pcb *pcb, struct pbuf *p, cons
 					// Process the handshake response
 					wireguardif_process_response_message(device, peer, msg_response, addr, port);
 				} else {
-					ESP_LOGW(TAG, "[WG_RX] ERROR: No peer found for receiver_idx=%lu", (unsigned long)msg_response->receiver);
+					WG_RX_WARN("[WG_RX] ERROR: No peer found for receiver_idx=%lu", (unsigned long)msg_response->receiver);
 				}
 			} else {
-				ESP_LOGW(TAG, "[WG_RX] Response MAC check FAILED");
+				WG_RX_WARN("[WG_RX] Response MAC check FAILED");
 			}
 			break;
 
