@@ -400,8 +400,10 @@ struct microlink_s {
      * writers (the WG manager, coord for own_domain) change them under it,
      * and the readers (microlink_resolve, microlink_get_peer_info) read
      * under it, so a name never meets another node's address. The WG
-     * manager reads its own table without it. Taken before lwIP's core
-     * lock, never after. */
+     * manager reads its own table without it. A leaf lock: nothing is
+     * taken or waited on under it — not lwIP's core lock, not a queue, not
+     * a log line — so it may be taken with lwIP's core lock held, and a
+     * WireGuard peer is removed before its slot is forgotten under it. */
     SemaphoreHandle_t peers_lock;
 
     /* STUN results (written by coord, read by coord only) */

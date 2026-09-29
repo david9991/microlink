@@ -110,8 +110,9 @@ bool ml_peers_map_drops(const ml_peer_t *peer, bool complete);
  * @param peers The table
  * @param count Its count of slots in use, updated
  * @param complete Every peer of the map was queued as an ADD
- * @param drop Called with each dropped peer's slot before it is forgotten
- *        (its WireGuard peer removed there); may be NULL
+ * @param drop Called with each dropped peer's slot before it is forgotten;
+ *        may be NULL (the caller then drops what ml_peers_map_drops selects
+ *        before calling this)
  * @param ctx Passed to `drop`
  * @return true: the map is applied, complete or not — names then resolve
  *         among the peers it added, never among cached ones

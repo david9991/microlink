@@ -213,13 +213,9 @@ int ml_peer_nvs_load_all(ml_peer_t *peers, int max_peers) {
         }
 
         loaded++;
-
-        char ip_str[16];
-        microlink_ip_to_str(p->vpn_ip, ip_str);
-        ESP_LOGI(TAG, "Loaded cached peer: %s (%s)", p->hostname, ip_str);
     }
 
-    ESP_LOGI(TAG, "Loaded %d cached peers from NVS", loaded);
+    /* No line here: the caller holds the peer table's lock */
     return loaded;
 }
 

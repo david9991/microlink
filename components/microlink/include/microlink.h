@@ -235,6 +235,9 @@ int microlink_get_peer_count(const microlink_t *ml);
  * @param index Peer index (0 to peer_count-1)
  * @param info Output peer info (copied)
  * @return ESP_OK if valid index
+ *
+ * Waits on nothing but the peer table's own lock, held only for the copy:
+ * it may be called with lwIP's core lock held.
  */
 esp_err_t microlink_get_peer_info(const microlink_t *ml, int index, microlink_peer_info_t *info);
 
@@ -299,6 +302,9 @@ const char *microlink_imei_device_name(void);
  * 1. Exact match against full peer hostname
  * 2. Prefix match: "npc1" matches "npc1.tail12345.ts.net"
  * 3. Case-insensitive on all matches
+ *
+ * Waits on nothing but the peer table's own lock, held only for the lookup:
+ * it may be called with lwIP's core lock held (from an lwIP DNS hook, say).
  */
 uint32_t microlink_resolve(const microlink_t *ml, const char *hostname);
 

@@ -449,11 +449,9 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         return -1;  /* Silently skip — peer not in allowlist */
     }
 
-    /* From the slot's choice to its new name and address, under the peer
-     * table's lock: a reader sees the old peer or the new one, never a mix */
-    ml_peers_lock(ml);
-
-    /* Check if peer already exists */
+    /* The slot is chosen without the peer table's lock — this task alone
+     * writes the table — and written under it: a reader sees the old peer
+     * or the new one, never a mix. */
     int idx = find_peer_by_key(ml, update->public_key);
     if (idx >= 0) {
         ESP_LOGI(TAG, "Updating existing peer %s (idx=%d)", update->hostname, idx);
@@ -488,27 +486,28 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
                 microlink_ip_to_str(ml->peers[evict_idx].vpn_ip, evict_ip);
                 ESP_LOGW(TAG, "Evicting LRU peer %s (%s) for priority peer %s",
                          ml->peers[evict_idx].hostname, evict_ip, update->hostname);
+                /* Its WireGuard peer goes before the peer table's lock is
+                 * taken: nothing is waited on under that lock */
                 if (ml->peers[evict_idx].wg_peer_index >= 0 && ml->wg_netif) {
                     ML_LWIP_LOCKED(wireguardif_remove_peer((struct netif *)ml->wg_netif,
                                                            ml->peers[evict_idx].wg_peer_index));
                 }
-                ml->peers[evict_idx].active = false;
                 disco_forget_probes(evict_idx);
                 idx = evict_idx;
             }
         }
 
         if (idx < 0) {
-            ml_peers_unlock(ml);
             ESP_LOGW(TAG, "Peer table full (%d slots), cannot add %s",
                      ML_MAX_PEERS, update->hostname);
             return -1;
         }
-        if (idx >= ml->peer_count) {
-            ml->peer_count = idx + 1;
-        }
     }
 
+    ml_peers_lock(ml);
+    if (idx >= ml->peer_count) {
+        ml->peer_count = idx + 1;
+    }
     ml_peer_t *p = &ml->peers[idx];
     p->vpn_ip = update->vpn_ip;
     memcpy(p->public_key, update->public_key, 32);
@@ -667,7 +666,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
 }
 
 /* What goes with a peer the table forgets: its WireGuard peer, its DISCO
- * probes, and a line */
+ * probes, and a line. Never under the peer table's lock: it takes lwIP's. */
 static void unlink_peer(void *ctx, int idx) {
     microlink_t *ml = (microlink_t *)ctx;
     disco_forget_probes(idx);
@@ -695,10 +694,16 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
 }
 
 /* A full map's end: drop what it did not contain — peers of earlier maps,
- * and cached peers — when the whole list was queued; the map is applied. */
+ * and cached peers — when the whole list was queued; the map is applied.
+ * Their WireGuard peers go first, outside the peer table's lock (nothing is
+ * waited on under it); the slots are forgotten under it after. This task
+ * alone writes the table, so the same slots are dropped both times. */
 static void full_map_applied(microlink_t *ml, bool complete) {
+    for (int i = 0; i < ml->peer_count; i++) {
+        if (ml_peers_map_drops(&ml->peers[i], complete)) unlink_peer(ml, i);
+    }
     ml_peers_lock(ml);
-    ml->map_applied = ml_peers_map_end(ml->peers, &ml->peer_count, complete, unlink_peer, ml);
+    ml->map_applied = ml_peers_map_end(ml->peers, &ml->peer_count, complete, NULL, NULL);
     ml_peers_unlock(ml);
 }
 
@@ -1638,6 +1643,11 @@ void ml_wg_mgr_task(void *arg) {
         ml->peer_count = cached;
     }
     ml_peers_unlock(ml);
+    for (int i = 0; i < cached; i++) {
+        char ip_str[16];
+        microlink_ip_to_str(ml->peers[i].vpn_ip, ip_str);
+        ESP_LOGI(TAG, "Loaded cached peer: %s (%s)", ml->peers[i].hostname, ip_str);
+    }
     if (cached > 0) {
         ESP_LOGI(TAG, "Pre-loaded %d cached peers from NVS", cached);
     }
