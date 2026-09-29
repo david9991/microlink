@@ -997,6 +997,25 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
         }
     }
 
+    /* Whether the control server authorised this node (tailcfg.RegisterResponse):
+     * MachineAuthorized, with no AuthURL still to visit, no Error and the node
+     * key not expired. Kept, so a later start knows it may register without a
+     * key (microlink_has_identity). */
+    {
+        const cJSON *auth_url = cJSON_GetObjectItem(resp_json, "AuthURL");
+        const cJSON *error = cJSON_GetObjectItem(resp_json, "Error");
+        const bool pending = cJSON_IsString(auth_url) && auth_url->valuestring[0] != '\0';
+        const bool failed = cJSON_IsString(error) && error->valuestring[0] != '\0';
+        const bool authorized = cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "MachineAuthorized")) &&
+                                !cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "NodeKeyExpired")) &&
+                                !pending && !failed;
+        if (!authorized) {
+            ESP_LOGW(TAG, "Registration not authorised%s%s", pending ? " (login pending)" : "",
+                     failed ? " (error from the control server)" : "");
+        }
+        ml_identity_authorized(authorized);
+    }
+
     cJSON_Delete(resp_json);
 
     int64_t t_reg_done = esp_timer_get_time();

@@ -34,6 +34,7 @@ static const char *TAG = "microlink";
 #define NVS_KEY_WG_PUB      "wg_public"
 #define NVS_KEY_DISCO_PRI   "disco_pri"
 #define NVS_KEY_DISCO_PUB   "disco_pub"
+#define NVS_KEY_AUTHORIZED  "authorized"   /* u8 1: a registration was authorised */
 
 /* X25519 from x25519.h */
 #include "x25519.h"
@@ -111,6 +112,47 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
 
     nvs_close(nvs);
     return ESP_OK;
+}
+
+/* ============================================================================
+ * Identity: keys the control server has authorised
+ * ========================================================================== */
+
+void ml_identity_authorized(bool authorized) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    uint8_t held = 0;
+    const bool was = nvs_get_u8(nvs, NVS_KEY_AUTHORIZED, &held) == ESP_OK && held == 1;
+    esp_err_t err = ESP_OK;
+    if (authorized && !was) {
+        err = nvs_set_u8(nvs, NVS_KEY_AUTHORIZED, 1);
+    } else if (!authorized && was) {
+        err = nvs_erase_key(nvs, NVS_KEY_AUTHORIZED);
+    }
+    if (err == ESP_OK && authorized != was) {
+        err = nvs_commit(nvs);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Authorisation not recorded: %s", esp_err_to_name(err));
+    }
+    nvs_close(nvs);
+}
+
+bool microlink_has_identity(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return false;
+    }
+    size_t key_len = 0;
+    uint8_t authorized = 0;
+    const bool has = nvs_get_blob(nvs, NVS_KEY_MACHINE_PRI, NULL, &key_len) == ESP_OK &&
+                     key_len == 32 &&
+                     nvs_get_u8(nvs, NVS_KEY_AUTHORIZED, &authorized) == ESP_OK &&
+                     authorized == 1;
+    nvs_close(nvs);
+    return has;
 }
 
 /* ============================================================================

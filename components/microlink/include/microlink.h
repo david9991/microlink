@@ -85,6 +85,18 @@ typedef void (*microlink_data_cb_t)(microlink_t *ml, uint32_t src_ip, const uint
 esp_err_t microlink_factory_reset(void);
 
 /**
+ * @brief Whether this device holds a node identity the control server has authorised
+ * @return true once a registration was answered MachineAuthorized, with no AuthURL,
+ *         no Error and the node key not expired — until a later registration is
+ *         answered otherwise, or microlink_factory_reset()
+ *
+ * Such a node registers again without an auth key. Keys that exist but were
+ * never authorised (a first start whose key was refused, say) do not count.
+ * Reads NVS only: callable with or without an instance, before microlink_init().
+ */
+bool microlink_has_identity(void);
+
+/**
  * @brief Initialize MicroLink
  * @param config Configuration (copied internally)
  * @return Handle on success, NULL on failure

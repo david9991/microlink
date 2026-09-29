@@ -560,6 +560,10 @@ esp_err_t ml_zerocopy_send(microlink_t *ml, const uint8_t *data, size_t len,
 /* Utility */
 uint64_t ml_get_time_ms(void);
 
+/* microlink.c: record whether the control server has authorised this node's
+ * identity (microlink_has_identity), writing NVS only when it changes. */
+void ml_identity_authorized(bool authorized);
+
 /* ============================================================================
  * Network Socket Wrappers — Route through AT sockets when cellular active
  *
