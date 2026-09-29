@@ -26,8 +26,12 @@ typedef struct {
 /**
  * @brief The answer a reply stands for
  *
- * A status that is not 2xx is REFUSED (a plain-text 401 for a spent key, say);
- * a reply with no JSON body is UNREADABLE; otherwise the body decides: an
+ * A 401 or a 403 is REFUSED (a plain-text 401 for a spent key, say). Any
+ * other status that is not 2xx is UNREADABLE — a server error (5xx), a
+ * timeout (408), a rate limit (429), an interim response (1xx) left as the
+ * answer, and the rest — and so is a reply with no JSON body: no response at
+ * all, and a connection dropped before the body was read, among them. The
+ * caller registers again and keeps its key. Otherwise the body decides: an
  * Error is REFUSED, NodeKeyExpired KEY_EXPIRED, an AuthURL or no
  * MachineAuthorized NOT_AUTHORIZED, and only what is left AUTHORIZED.
  */

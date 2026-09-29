@@ -6,8 +6,11 @@
 #include "ml_register.h"
 
 microlink_registration_t ml_register_classify(const ml_register_reply_t *reply) {
-    if (reply->status != 0 && (reply->status < 200 || reply->status > 299)) {
+    if (reply->status == 401 || reply->status == 403) {
         return ML_REGISTRATION_REFUSED;
+    }
+    if (reply->status != 0 && (reply->status < 200 || reply->status > 299)) {
+        return ML_REGISTRATION_UNREADABLE;
     }
     if (!reply->body) {
         return ML_REGISTRATION_UNREADABLE;

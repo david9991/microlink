@@ -73,8 +73,10 @@ typedef enum {
     ML_REGISTRATION_AUTHORIZED,     /* MachineAuthorized */
     ML_REGISTRATION_NOT_AUTHORIZED, /* a login or an approval pending (AuthURL, or not MachineAuthorized) */
     ML_REGISTRATION_KEY_EXPIRED,    /* NodeKeyExpired */
-    ML_REGISTRATION_REFUSED,        /* an Error, or an HTTP status that is not 2xx */
-    ML_REGISTRATION_UNREADABLE,     /* a 2xx with no JSON body that can be read */
+    ML_REGISTRATION_REFUSED,        /* an Error, or an HTTP 401 or 403 */
+    ML_REGISTRATION_UNREADABLE,     /* no answer that can be read: no response, a connection
+                                       dropped, any other status that is not 2xx (5xx, 408,
+                                       429, ...), or no JSON body; registered again, key kept */
 } microlink_registration_t;
 
 /* Callback types */

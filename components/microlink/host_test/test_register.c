@@ -51,16 +51,30 @@ static void classify_every_reply(void) {
                   "no body, status %d bits %d", r.status, bits);
         }
     }
-    /* Any other status is a refusal, body or none: headscale's plain-text 401
+    /* A 401 or a 403 is a refusal, body or none: headscale's plain-text 401
      * for a spent key among them */
-    const int refusals[] = {100, 199, 300, 301, 400, 401, 403, 404, 500, 503};
-    for (size_t s = 0; s < sizeof refusals / sizeof refusals[0]; s++) {
-        for (int body = 0; body < 2; body++) {
-            const ml_register_reply_t r = {.status = refusals[s], .body = body,
-                                           .machine_authorized = true};
-            CHECK(ml_register_classify(&r) == ML_REGISTRATION_REFUSED, "status %d", r.status);
+    const int refusals[] = {401, 403};
+    /* Any other status that is not 2xx is no answer: a server hiccup, a
+     * timeout, a rate limit, an interim response, never a refusal */
+    const int unreadable[] = {100, 101, 103, 199, 300, 301, 400, 404, 408, 429, 500, 502, 503, 504};
+    for (int body = 0; body < 2; body++) {
+        for (int error = 0; error < 2; error++) {
+            for (size_t s = 0; s < sizeof refusals / sizeof refusals[0]; s++) {
+                const ml_register_reply_t r = {.status = refusals[s], .body = body,
+                                               .machine_authorized = true, .error = error};
+                CHECK(ml_register_classify(&r) == ML_REGISTRATION_REFUSED, "status %d", r.status);
+            }
+            for (size_t s = 0; s < sizeof unreadable / sizeof unreadable[0]; s++) {
+                const ml_register_reply_t r = {.status = unreadable[s], .body = body,
+                                               .machine_authorized = true, .error = error};
+                CHECK(ml_register_classify(&r) == ML_REGISTRATION_UNREADABLE, "status %d body %d error %d",
+                      r.status, body, error);
+            }
         }
     }
+    /* No response at all, or a connection dropped before anything was read */
+    const ml_register_reply_t nothing = {0};
+    CHECK(ml_register_classify(&nothing) == ML_REGISTRATION_UNREADABLE, "no response");
 }
 
 static int status_of(const uint8_t *p, size_t len, uint8_t flags) {

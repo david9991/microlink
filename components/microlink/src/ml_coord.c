@@ -986,8 +986,9 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     free(h2_resp);
 
     /* What the answer was, as far as it is read: a missing or unparsable body
-     * and a status that is not 2xx are answers too (a plain-text 401 for a
-     * spent key, say), and fail the registration. */
+     * and a status that is not 2xx are answers too, and fail the registration
+     * — a 401 or a 403 (a plain-text 401 for a spent key, say) as a refusal,
+     * the rest (a 5xx, no response, a connection dropped) as unreadable. */
     ml_register_reply_t reply = {.status = status};
 
     /* Send connection-level WINDOW_UPDATE for RegisterResponse.
