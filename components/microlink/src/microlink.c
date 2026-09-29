@@ -168,22 +168,32 @@ static void *cjson_psram_malloc(size_t size) {
  * ========================================================================== */
 
 esp_err_t microlink_factory_reset(void) {
-    esp_err_t err;
-
     /* Erase key namespace */
     nvs_handle_t nvs;
-    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
     if (err == ESP_OK) {
-        nvs_erase_all(nvs);
-        nvs_commit(nvs);
+        err = nvs_erase_all(nvs);
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs);
+        }
         nvs_close(nvs);
-        ESP_LOGI(TAG, "Factory reset: keys erased");
     }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Factory reset: keys not erased: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "Factory reset: keys erased");
 
     /* Erase cached peers */
-    ml_peer_nvs_init();
-    ml_peer_nvs_clear();
-    ml_peer_nvs_deinit();
+    err = ml_peer_nvs_init();
+    if (err == ESP_OK) {
+        err = ml_peer_nvs_clear();
+        ml_peer_nvs_deinit();
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Factory reset: cached peers not erased: %s", esp_err_to_name(err));
+        return err;
+    }
 
     ESP_LOGI(TAG, "Factory reset complete");
     return ESP_OK;

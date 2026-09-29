@@ -75,9 +75,11 @@ typedef void (*microlink_data_cb_t)(microlink_t *ml, uint32_t src_ip, const uint
 
 /**
  * @brief Factory reset — erase all stored keys and cached peers
- * @return ESP_OK on success
+ * @return ESP_OK once both are erased and committed, else the NVS error that
+ *         stopped it (the keys are erased first; a failure leaves the rest)
  *
- * Must be called BEFORE microlink_init(). Erases:
+ * Call it with no instance: before microlink_init() or after
+ * microlink_destroy(). Erases:
  * - Machine key, WireGuard key, DISCO key (NVS namespace "microlink")
  * - Cached peer data (NVS namespace "ml_peers")
  * After reset, next microlink_init() will generate fresh keys.
