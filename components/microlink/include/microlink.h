@@ -137,6 +137,8 @@ microlink_t *microlink_init(const microlink_config_t *config);
  *
  * WiFi must be connected before calling this.
  * Connection proceeds asynchronously - use callbacks or poll state.
+ * An instance starts once: after microlink_stop() it refuses
+ * (ESP_ERR_INVALID_STATE); destroy it and init another.
  */
 esp_err_t microlink_start(microlink_t *ml);
 

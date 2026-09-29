@@ -371,6 +371,12 @@ microlink_t *microlink_init(const microlink_config_t *config) {
 
 esp_err_t microlink_start(microlink_t *ml) {
     if (!ml) return ESP_ERR_INVALID_ARG;
+    if (ml->stopped) {
+        /* Its shutdown bit, queues and sockets are what a stop left: an
+         * instance starts once */
+        ESP_LOGW(TAG, "Stopped: destroy this instance and init another");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (ml->state != ML_STATE_IDLE) {
         ESP_LOGW(TAG, "Already started (state=%d)", ml->state);
         return ESP_ERR_INVALID_STATE;
@@ -587,13 +593,16 @@ esp_err_t microlink_stop(microlink_t *ml) {
     if (!ml) return ESP_ERR_INVALID_ARG;
 
     ESP_LOGI(TAG, "Stopping...");
+    ml->stopped = true;
     xEventGroupSetBits(ml->events, ML_EVT_SHUTDOWN_REQUEST);
 
     /* Wake the coord task out of its reconnect back-off, which waits on its
      * command queue; every other wait of every task either watches
      * ML_EVT_SHUTDOWN_REQUEST or is bounded by a socket timeout. */
     ml_coord_cmd_t cmd = ML_CMD_DISCONNECT;
-    xQueueSend(ml->coord_cmd_queue, &cmd, 0);
+    if (ml->coord_cmd_queue) {  /* none when init failed before it was made */
+        xQueueSend(ml->coord_cmd_queue, &cmd, 0);
+    }
 
     /* Wait until every task started has exited: each gives task_exited just
      * before it deletes itself (so it must not be deleted here too). Nothing

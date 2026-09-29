@@ -381,6 +381,8 @@ struct microlink_s {
      * once for every task start created, so nothing is freed under a task. */
     SemaphoreHandle_t task_exited;
     int tasks_started;
+    /* microlink_stop has run: the instance is not started again */
+    bool stopped;
 
     /* Queues */
     QueueHandle_t derp_tx_queue;        /* -> derp_tx task */
