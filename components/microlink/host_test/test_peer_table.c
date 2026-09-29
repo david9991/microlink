@@ -3,6 +3,7 @@
  * map's BEGIN and END do to it, and which peer a name resolves to.
  * Run by run.sh with the host's C compiler.
  */
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,6 +22,7 @@ static int failures;
     } while (0)
 
 #define PEERS 8
+#define COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
 static ml_peer_t peers[PEERS];
 static int count;
@@ -217,8 +219,157 @@ static void fqdns(void) {
     CHECK(!ml_name_domain(out, sizeof out, NULL) && out[0] == '\0', "none");
 }
 
+/* ---- random tables against a reference model ---------------------------- */
+
+static uint32_t rng = 0x9e3779b9;
+
+static uint32_t next(void) {
+    rng ^= rng << 13;
+    rng ^= rng >> 17;
+    rng ^= rng << 5;
+    return rng;
+}
+
+static const char *pick(const char *const *from, size_t n) {
+    return from[next() % n];
+}
+
+/* `s` in lower case, into `out` */
+static void lower(char *out, size_t size, const char *s) {
+    size_t i = 0;
+    for (; s && s[i] && i + 1 < size; i++) {
+        out[i] = (char)tolower((unsigned char)s[i]);
+    }
+    out[i] = '\0';
+}
+
+/* The resolve rule, written plainly: the first slot that is active, not
+ * cached, not cut, and has a name with a domain, whose whole name is the
+ * query, or whose first label is and whose domain is the board's own */
+static uint32_t model_resolve(const char *own, const char *name) {
+    if (!name || !name[0]) return 0;
+    char q[80];
+    char o[80];
+    lower(q, sizeof q, name);
+    lower(o, sizeof o, own);
+    for (int i = 0; i < count; i++) {
+        const ml_peer_t *p = &peers[i];
+        if (!p->active || p->cached || p->name_cut) continue;
+        char h[80];
+        lower(h, sizeof h, p->hostname);
+        char *dot = strchr(h, '.');
+        if (!dot || !dot[1]) continue;
+        if (strcmp(h, q) == 0) return p->vpn_ip;
+        *dot = '\0';
+        if (o[0] && strcmp(h, q) == 0 && strcmp(dot + 1, o) == 0) return p->vpn_ip;
+    }
+    return 0;
+}
+
+static void random_names(void) {
+    static const char *const labels[] = {"a", "host", "HOST", "control-host", "x1", "b-2"};
+    static const char *const domains[] = {"tail1.ts.net", "TAIL1.ts.net", "other.ts.net",
+                                          "tail1.ts.net.x", "tail1", ""};
+    static const char *const owns[] = {"tail1.ts.net", "Tail1.TS.net", "other.ts.net", "", NULL};
+    int found = 0;
+    int by_label = 0;
+    for (int round = 0; round < 20000; round++) {
+        reset();
+        const int n = (int)(next() % (PEERS + 1));
+        for (int i = 0; i < n; i++) {
+            char fqdn[160];
+            const char *label = pick(labels, COUNT(labels));
+            const char *domain = pick(domains, COUNT(domains));
+            switch (next() % 6) {
+            case 0:  /* dotless */
+                snprintf(fqdn, sizeof fqdn, "%s", label);
+                break;
+            case 1:  /* a label long enough that the name is cut at 63 */
+                snprintf(fqdn, sizeof fqdn, "%s%s.%s.", label,
+                         "-0123456789012345678901234567890123456789012345678901234", domain);
+                break;
+            default:
+                snprintf(fqdn, sizeof fqdn, "%s.%s%s", label, domain, next() & 1 ? "." : "");
+            }
+            memset(&peers[i], 0, sizeof peers[i]);
+            peers[i].name_cut = !ml_name_from_fqdn(peers[i].hostname, sizeof peers[i].hostname, fqdn);
+            peers[i].active = next() % 4 != 0;
+            peers[i].cached = next() % 5 == 0;
+            peers[i].vpn_ip = 0x64400000u + (uint32_t)i + 1;
+        }
+        count = n;
+        const char *own = owns[next() % COUNT(owns)];
+        /* The query: a slot's name or label, in any case, or a pick */
+        char query[80];
+        if (n > 0 && next() % 3 != 0) {
+            const ml_peer_t *p = &peers[next() % (uint32_t)n];
+            snprintf(query, sizeof query, "%s", p->hostname);
+            if (next() & 1) {
+                char *dot = strchr(query, '.');
+                if (dot) *dot = '\0';
+            }
+            for (char *c = query; *c; c++) {
+                if (next() & 1) *c = (char)toupper((unsigned char)*c);
+            }
+        } else {
+            snprintf(query, sizeof query, "%s%s%s", pick(labels, COUNT(labels)),
+                     next() & 1 ? "." : "", next() & 1 ? pick(domains, COUNT(domains)) : "");
+        }
+        const uint32_t got = ml_peers_resolve(peers, count, own, query);
+        const uint32_t want = model_resolve(own, query);
+        CHECK(got == want, "round %d: \"%s\" (own %s): %08x, model %08x", round, query,
+              own ? own : "(none)", (unsigned)got, (unsigned)want);
+        found += got != 0;
+        by_label += got != 0 && !strchr(query, '.');
+    }
+    /* The sweep reaches both rules, not only the misses */
+    CHECK(found > 2000 && by_label > 500, "found %d, by label %d", found, by_label);
+}
+
+static void random_map_ends(void) {
+    for (int round = 0; round < 20000; round++) {
+        reset();
+        count = (int)(next() % (PEERS + 1));
+        for (int i = 0; i < count; i++) {
+            peers[i].active = next() % 4 != 0;
+            peers[i].cached = next() % 3 == 0;
+            peers[i].in_map = next() & 1;
+            peers[i].vpn_ip = (uint32_t)i + 1;
+        }
+        const bool complete = next() & 1;
+        ml_peer_t before[PEERS];
+        memcpy(before, peers, sizeof before);
+        const int count_before = count;
+        drops = 0;
+        CHECK(ml_peers_map_end(peers, &count, complete, drop, &drops), "round %d: applied", round);
+        /* The model: a complete map drops, in order, every active slot not in
+         * it; the count ends past the last active slot, and never grows */
+        int want_drops = 0;
+        int last_active = -1;
+        for (int i = 0; i < count_before; i++) {
+            const bool dropped_here = complete && before[i].active && !before[i].in_map;
+            if (dropped_here) {
+                CHECK(want_drops < drops && dropped[want_drops] == i, "round %d: drop %d", round, i);
+                want_drops++;
+                CHECK(!peers[i].active && !peers[i].cached, "round %d: slot %d forgotten", round, i);
+            } else {
+                CHECK(peers[i].active == before[i].active && peers[i].cached == before[i].cached,
+                      "round %d: slot %d untouched", round, i);
+                if (before[i].active) last_active = i;
+            }
+        }
+        CHECK(drops == want_drops, "round %d: %d drops, model %d", round, drops, want_drops);
+        const int want_count = want_drops ? last_active + 1 : count_before;
+        CHECK(count == want_count || (!want_drops && count == count_before),
+              "round %d: count %d, model %d", round, count, want_count);
+        CHECK(count <= count_before, "round %d: count grew", round);
+    }
+}
+
 int main(void) {
     fqdns();
+    random_names();
+    random_map_ends();
     full_maps();
     names();
     if (failures) {
