@@ -497,9 +497,9 @@ void ml_derp_tx_task(void *arg) {
         loop_count++;
         uint64_t loop_start = ml_get_time_ms();
 
-        /* Unconditional heartbeat - proves task is alive */
+        /* Heartbeat - proves the task is alive (a status line, not a warning) */
         if (loop_start - last_heartbeat_ms > 5000) {
-            ESP_LOGW(TAG, "HEARTBEAT: loop=%lu conn=%d rx=%lu tx=%lu stack_free=%lu",
+            ESP_LOGI(TAG, "HEARTBEAT: loop=%lu conn=%d rx=%lu tx=%lu stack_free=%lu",
                      (unsigned long)loop_count, ml->derp.connected,
                      (unsigned long)frames_rx, (unsigned long)frames_tx,
                      (unsigned long)uxTaskGetStackHighWaterMark(NULL));

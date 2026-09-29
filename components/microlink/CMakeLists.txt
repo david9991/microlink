@@ -42,3 +42,6 @@ idf_component_register(
     PRIV_REQUIRES
         wireguard_lwip
 )
+
+# ML_LOG_LEVEL: MicroLink's log lines above it are compiled out.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE "LOG_LOCAL_LEVEL=${CONFIG_ML_LOG_LEVEL}")

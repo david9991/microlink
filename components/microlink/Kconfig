@@ -20,6 +20,39 @@ menu "MicroLink V2 Configuration"
 
             Zero-copy mode contributed by dj-oyu (https://github.com/dj-oyu/microlink)
 
+    choice ML_LOG_LEVEL_CHOICE
+        prompt "Most detailed log level MicroLink prints"
+        default ML_LOG_LEVEL_INFO
+        help
+            MicroLink's own log lines above this level are compiled out
+            (LOG_LOCAL_LEVEL for this component); ESP-IDF's run-time level
+            (LOG_DEFAULT_LEVEL) still applies on top. WARN keeps what went
+            wrong and drops the connection chatter and the 5 s DERP
+            heartbeat.
+
+        config ML_LOG_LEVEL_NONE
+            bool "No output"
+        config ML_LOG_LEVEL_ERROR
+            bool "Error"
+        config ML_LOG_LEVEL_WARN
+            bool "Warning"
+        config ML_LOG_LEVEL_INFO
+            bool "Info"
+        config ML_LOG_LEVEL_DEBUG
+            bool "Debug"
+        config ML_LOG_LEVEL_VERBOSE
+            bool "Verbose"
+    endchoice
+
+    config ML_LOG_LEVEL
+        int
+        default 0 if ML_LOG_LEVEL_NONE
+        default 1 if ML_LOG_LEVEL_ERROR
+        default 2 if ML_LOG_LEVEL_WARN
+        default 3 if ML_LOG_LEVEL_INFO
+        default 4 if ML_LOG_LEVEL_DEBUG
+        default 5 if ML_LOG_LEVEL_VERBOSE
+
     config ML_HOSTINFO_OS
         string "OS this node reports to the control server"
         default "freertos"
