@@ -67,3 +67,6 @@ CONFIG_ML_CONFIG_MAX_ALLOWED_PEERS=512
 
 # Priority peer (guaranteed WG slot even when peer table is full)
 CONFIG_ML_PRIORITY_PEER_IP=""
+
+# MicroLink runs lwIP's IP and TCP input under lwIP's core lock
+CONFIG_LWIP_TCPIP_CORE_LOCKING=y

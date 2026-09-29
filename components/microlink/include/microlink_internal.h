@@ -506,24 +506,21 @@ static inline bool ml_stopping(microlink_t *ml, uint32_t ms) {
  * callback — so a locked call may nest in another: pass what ml_lwip_lock
  * returned to ml_lwip_unlock. Never make a BSD socket call or a
  * tcpip_callback/tcpip_api_call wait with it held: they take it too.
- * Without CONFIG_LWIP_TCPIP_CORE_LOCKING there is no such lock, and both do
- * nothing. */
+ * Without CONFIG_LWIP_TCPIP_CORE_LOCKING there is no such lock, and nothing
+ * would keep IP and TCP input in the WG manager's task from racing lwIP's
+ * thread: MicroLink does not build without it. */
+#if !LWIP_TCPIP_CORE_LOCKING
+#error "MicroLink needs CONFIG_LWIP_TCPIP_CORE_LOCKING=y: IP and TCP input run inline in its WireGuard task, safe only under lwIP's core lock"
+#endif
+
 static inline bool ml_lwip_lock(void) {
-#if LWIP_TCPIP_CORE_LOCKING
     if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) return false;
     LOCK_TCPIP_CORE();
     return true;
-#else
-    return false;
-#endif
 }
 
 static inline void ml_lwip_unlock(bool taken) {
-#if LWIP_TCPIP_CORE_LOCKING
     if (taken) UNLOCK_TCPIP_CORE();
-#else
-    (void)taken;
-#endif
 }
 
 /* Run the statements with lwIP's core lock held (see ml_lwip_lock) */
