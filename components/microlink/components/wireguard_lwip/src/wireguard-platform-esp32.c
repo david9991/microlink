@@ -7,7 +7,10 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "lwip/sys.h"
+#include "esp_log.h"
 #include <string.h>
+
+static const char *TAG = "wireguard";
 
 /* ============================================================================
  * Time Functions
@@ -28,7 +31,7 @@ void wireguard_tai64n_now(uint8_t *output) {
     // Log raw uptime before TAI offset (only every ~5s to avoid spam)
     static uint64_t last_log_s = 0;
     if (seconds - last_log_s >= 5) {
-        printf("[TAI64N] uptime=%llu s, nano=%lu\n", (unsigned long long)seconds, (unsigned long)nanoseconds);
+        ESP_LOGD(TAG, "[TAI64N] uptime=%llu s, nano=%lu", (unsigned long long)seconds, (unsigned long)nanoseconds);
         last_log_s = seconds;
     }
 
