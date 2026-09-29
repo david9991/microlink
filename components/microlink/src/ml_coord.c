@@ -757,6 +757,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
         auth_key = cJSON_AddStringToObject(auth, "AuthKey", ml->config.auth_key);
         cJSON_AddItemToObject(root, "Auth", auth);
     }
+    const bool sent_key = auth_key != NULL;
 
     /* Hostinfo */
     cJSON *hostinfo = hostinfo_new(ml);
@@ -1060,20 +1061,33 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     /* Whether the control server authorised this node (tailcfg.RegisterResponse):
      * MachineAuthorized, with no AuthURL still to visit, no Error and the node
      * key not expired. Kept, so a later start knows it may register without a
-     * key (microlink_has_identity). */
+     * key (microlink_has_identity), and told (microlink_get_registration). A
+     * registration not authorised fails: no session follows from it, and the
+     * next one may go without a key its caller has since emptied. */
     {
         const cJSON *auth_url = cJSON_GetObjectItem(resp_json, "AuthURL");
         const cJSON *error = cJSON_GetObjectItem(resp_json, "Error");
         const bool pending = cJSON_IsString(auth_url) && auth_url->valuestring[0] != '\0';
-        const bool failed = cJSON_IsString(error) && error->valuestring[0] != '\0';
-        const bool authorized = cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "MachineAuthorized")) &&
-                                !cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "NodeKeyExpired")) &&
-                                !pending && !failed;
-        if (!authorized) {
-            ESP_LOGW(TAG, "Registration not authorised%s%s", pending ? " (login pending)" : "",
-                     failed ? " (error from the control server)" : "");
+        microlink_registration_t answer = ML_REGISTRATION_AUTHORIZED;
+        if (cJSON_IsString(error) && error->valuestring[0] != '\0') {
+            answer = ML_REGISTRATION_REFUSED;
+        } else if (cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "NodeKeyExpired"))) {
+            answer = ML_REGISTRATION_KEY_EXPIRED;
+        } else if (pending || !cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "MachineAuthorized"))) {
+            answer = ML_REGISTRATION_NOT_AUTHORIZED;
         }
-        ml_identity_authorized(authorized);
+        ml->registration_with_key = sent_key;
+        ml->registration = answer;
+        ml_identity_authorized(answer == ML_REGISTRATION_AUTHORIZED);
+        if (answer != ML_REGISTRATION_AUTHORIZED) {
+            ESP_LOGW(TAG, "Registration not authorised (%s)%s",
+                     answer == ML_REGISTRATION_REFUSED       ? "refused"
+                     : answer == ML_REGISTRATION_KEY_EXPIRED ? "node key expired"
+                                                             : "login or approval pending",
+                     sent_key ? ", auth key sent" : "");
+            cJSON_Delete(resp_json);
+            return -1;
+        }
     }
 
     cJSON_Delete(resp_json);

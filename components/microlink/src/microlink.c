@@ -677,6 +677,13 @@ bool microlink_is_connected(const microlink_t *ml) {
     return ml && ml->state == ML_STATE_CONNECTED;
 }
 
+microlink_registration_t microlink_get_registration(const microlink_t *ml, bool *with_auth_key) {
+    if (with_auth_key) {
+        *with_auth_key = ml && ml->registration_with_key;
+    }
+    return ml ? ml->registration : ML_REGISTRATION_NONE;
+}
+
 uint32_t microlink_get_vpn_ip(const microlink_t *ml) {
     return ml ? ml->vpn_ip : 0;
 }

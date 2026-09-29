@@ -343,6 +343,11 @@ struct microlink_s {
     volatile microlink_state_t state;
     volatile uint32_t vpn_ip;
 
+    /* The last registration's answer, and whether it carried the auth key
+     * (written by coord) */
+    volatile microlink_registration_t registration;
+    volatile bool registration_with_key;
+
     /* Event group (cross-task synchronization) */
     EventGroupHandle_t events;
 

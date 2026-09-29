@@ -67,6 +67,15 @@ typedef enum {
     ML_STATE_ERROR,
 } microlink_state_t;
 
+/* What the control server answered a registration */
+typedef enum {
+    ML_REGISTRATION_NONE = 0,       /* none answered yet */
+    ML_REGISTRATION_AUTHORIZED,     /* MachineAuthorized */
+    ML_REGISTRATION_NOT_AUTHORIZED, /* a login or an approval pending (AuthURL, or not MachineAuthorized) */
+    ML_REGISTRATION_KEY_EXPIRED,    /* NodeKeyExpired */
+    ML_REGISTRATION_REFUSED,        /* an Error */
+} microlink_registration_t;
+
 /* Callback types */
 typedef void (*microlink_state_cb_t)(microlink_t *ml, microlink_state_t state, void *user_data);
 typedef void (*microlink_peer_cb_t)(microlink_t *ml, const microlink_peer_info_t *peer, void *user_data);
@@ -172,6 +181,19 @@ microlink_state_t microlink_get_state(const microlink_t *ml);
  * @brief Check if connected and ready to send/receive
  */
 bool microlink_is_connected(const microlink_t *ml);
+
+/**
+ * @brief What the control server answered this instance's last registration
+ * @param ml Handle
+ * @param with_auth_key Set to whether that registration carried the auth key
+ *        (may be NULL)
+ * @return ML_REGISTRATION_NONE until one is answered
+ *
+ * A registration answered anything but ML_REGISTRATION_AUTHORIZED fails:
+ * the client backs off and registers again, with whatever auth key it holds
+ * then — none, once the caller has emptied the one it was given.
+ */
+microlink_registration_t microlink_get_registration(const microlink_t *ml, bool *with_auth_key);
 
 /**
  * @brief Get our assigned VPN IP
