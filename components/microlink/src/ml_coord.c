@@ -1059,6 +1059,8 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
      * that does not fit the buffer, its NUL included, is not read. */
     ml_h2_response_t response;
     ml_h2_read_response(h2_resp, h2_resp_len, 1, resp_buf, 8191, &response);
+    /* What the DATA frames took of the connection's window, padding and all */
+    const size_t data_flow = ml_h2_data_flow(h2_resp, h2_resp_len);
     free(h2_resp);
     const int status = response.status;
     size_t resp_total = response.data_len <= 8191 ? response.data_len : 0;
@@ -1069,11 +1071,13 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
      * the rest (a 5xx, no response, a connection dropped) as unreadable. */
     ml_register_reply_t reply = {.status = status};
 
-    /* Send connection-level WINDOW_UPDATE for RegisterResponse.
-     * Stream 1 is closed (END_STREAM received), only update connection level. */
-    if (response.data_len > 0) {
+    /* Send connection-level WINDOW_UPDATE for RegisterResponse: every DATA
+     * payload whole, Pad Length and padding included (RFC 9113 section
+     * 6.9.1). Stream 1 is closed (END_STREAM received), only update
+     * connection level. */
+    if (data_flow > 0) {
         uint8_t wu_buf[13];
-        int wu_len = ml_h2_build_window_update(wu_buf, 13, 0, (uint32_t)response.data_len);
+        int wu_len = ml_h2_build_window_update(wu_buf, 13, 0, (uint32_t)data_flow);
         noise_send(ml, noise, wu_buf, wu_len);
     }
 

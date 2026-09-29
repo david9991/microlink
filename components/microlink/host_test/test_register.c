@@ -312,6 +312,11 @@ static void read_random_frames(void) {
               "random frames %d: malformed reads as nothing", round);
         CHECK(r_cut.data_len <= data_sum, "random frames %d: body %zu of %zu", round, r_cut.data_len,
               data_sum);
+        /* Flow control counts whole payloads: at least the body, at most every DATA */
+        CHECK(ml_h2_data_flow(copy, cut) >= r_cut.data_len &&
+                  ml_h2_data_flow(copy, cut) <= ml_h2_data_flow(buf, n),
+              "random frames %d: flow %zu, body %zu", round, ml_h2_data_flow(copy, cut),
+              r_cut.data_len);
         if (complete) {
             completes++;
             CHECK(r_full.status == r_cut.status && r_full.data_len == r_cut.data_len &&
@@ -351,6 +356,11 @@ static void read_every_response(void) {
           "body: %d %zu", r.status, r.data_len);
     CHECK(ml_h2_response_complete(buf, n, 1), "body: complete");
     CHECK(!ml_h2_response_complete(buf, n - 1, 1), "body: last frame cut: not complete");
+    /* Flow control counts both DATA payloads whole, padding and all */
+    CHECK(ml_h2_data_flow(buf, n) == sizeof body + sizeof padded_body, "body: flow %zu",
+          ml_h2_data_flow(buf, n));
+    CHECK(ml_h2_data_flow(buf, n - 1) == sizeof body, "body: last frame cut: flow %zu",
+          ml_h2_data_flow(buf, n - 1));
     /* A body larger than the buffer: counted whole, copied as far as it fits */
     ml_h2_read_response(buf, n, 1, data, 4, &r);
     CHECK(r.data_len == 9 && memcmp(data, "{\"a\"", 4) == 0, "cut body: %zu", r.data_len);
@@ -407,6 +417,8 @@ static void read_every_response(void) {
     n += frame(buf + n, HEADERS, END_HEADERS | END_STREAM, 3, s401, sizeof s401);
     n += frame(buf + n, HEADERS, END_HEADERS, 1, s200, sizeof s200);
     n += frame(buf + n, DATA, END_STREAM, 3, body, sizeof body);
+    CHECK(ml_h2_data_flow(buf, n) == sizeof body, "another stream's DATA flows too: %zu",
+          ml_h2_data_flow(buf, n));
     n += frame(buf + n, DATA, END_STREAM, 1, body, 2);
     ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
     CHECK(r.status == 200 && r.ended && r.data_len == 2, "other streams: %d %zu", r.status, r.data_len);

@@ -161,6 +161,16 @@ bool ml_h2_next_frame(const uint8_t *frames, size_t len, size_t *pos, ml_h2_fram
     return true;
 }
 
+size_t ml_h2_data_flow(const uint8_t *frames, size_t len) {
+    size_t flow = 0;
+    size_t pos = 0;
+    ml_h2_frame_t f;
+    while (ml_h2_next_frame(frames, len, &pos, &f)) {
+        if (f.type == H2_FRAME_DATA) flow += f.len;
+    }
+    return flow;
+}
+
 void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
                          uint8_t *data, size_t cap, ml_h2_response_t *r) {
     memset(r, 0, sizeof(*r));

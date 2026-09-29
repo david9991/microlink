@@ -116,3 +116,11 @@ bool ml_h2_response_complete(const uint8_t *frames, size_t len, uint32_t stream)
  *        0 when none could be read
  */
 int ml_h2_final_status(const uint8_t *frames, size_t len, uint32_t stream);
+
+/**
+ * @brief What a run of frames takes of the connection's flow-control window:
+ *        every whole DATA frame's payload, on any stream, its Pad Length and
+ *        padding included (RFC 9113 section 6.9.1) — what a connection-level
+ *        WINDOW_UPDATE gives back
+ */
+size_t ml_h2_data_flow(const uint8_t *frames, size_t len);
