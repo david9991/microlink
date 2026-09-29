@@ -217,6 +217,30 @@ esp_err_t microlink_factory_reset(void) {
  * Public API
  * ========================================================================== */
 
+/* Release what an instance holds, each part only if it was made, then wipe
+ * the whole instance — its private keys and its auth key among it — and free
+ * it: the end of microlink_destroy, and every way out of a microlink_init
+ * that failed. */
+static void instance_free(microlink_t *ml) {
+    if (ml->peer_nvs_open) {
+        ml_peer_nvs_deinit();
+    }
+    if (ml->config_httpd) {
+        ml_config_httpd_deinit(ml->config_httpd);
+    }
+    if (ml->derp_tx_queue) vQueueDelete(ml->derp_tx_queue);
+    if (ml->disco_rx_queue) vQueueDelete(ml->disco_rx_queue);
+    if (ml->wg_rx_queue) vQueueDelete(ml->wg_rx_queue);
+    if (ml->stun_rx_queue) vQueueDelete(ml->stun_rx_queue);
+    if (ml->coord_cmd_queue) vQueueDelete(ml->coord_cmd_queue);
+    if (ml->peer_update_queue) vQueueDelete(ml->peer_update_queue);
+    if (ml->events) vEventGroupDelete(ml->events);
+    if (ml->task_exited) vSemaphoreDelete(ml->task_exited);
+    if (ml->auth_lock) vSemaphoreDelete(ml->auth_lock);
+    mbedtls_platform_zeroize(ml, sizeof(*ml));
+    free(ml);
+}
+
 microlink_t *microlink_init(const microlink_config_t *config) {
     if (!config || !config->auth_key) {
         ESP_LOGE(TAG, "Invalid config: auth_key required");
@@ -273,12 +297,13 @@ microlink_t *microlink_init(const microlink_config_t *config) {
 
     /* Load or generate persistent keys */
     if (load_or_generate_keys(ml) != ESP_OK) {
-        free(ml);
+        instance_free(ml);
         return NULL;
     }
 
     /* Initialize peer NVS cache */
     ml_peer_nvs_init();
+    ml->peer_nvs_open = true;
 
     /* Initialize HTTP config server (loads NVS peer allowlist + settings) */
     ml->config_httpd = ml_config_httpd_init();
@@ -347,7 +372,7 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     ml->events = xEventGroupCreate();
     if (!ml->events) {
         ESP_LOGE(TAG, "Failed to create event group");
-        free(ml);
+        instance_free(ml);
         return NULL;
     }
 
@@ -355,9 +380,7 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     ml->task_exited = xSemaphoreCreateCounting(4, 0);
     if (!ml->task_exited) {
         ESP_LOGE(TAG, "Failed to create task exit semaphore");
-        vEventGroupDelete(ml->events);
-        mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
-        free(ml);
+        instance_free(ml);
         return NULL;
     }
 
@@ -365,10 +388,7 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     ml->auth_lock = xSemaphoreCreateMutex();
     if (!ml->auth_lock) {
         ESP_LOGE(TAG, "Failed to create auth key lock");
-        vSemaphoreDelete(ml->task_exited);
-        vEventGroupDelete(ml->events);
-        mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
-        free(ml);
+        instance_free(ml);
         return NULL;
     }
 
@@ -383,7 +403,7 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     if (!ml->derp_tx_queue || !ml->disco_rx_queue || !ml->wg_rx_queue ||
         !ml->stun_rx_queue || !ml->coord_cmd_queue || !ml->peer_update_queue) {
         ESP_LOGE(TAG, "Failed to create queues");
-        microlink_destroy(ml);
+        instance_free(ml);
         return NULL;
     }
 
@@ -667,35 +687,9 @@ void microlink_destroy(microlink_t *ml) {
 
     microlink_stop(ml);
 
-    /* Deinitialize peer NVS */
-    ml_peer_nvs_deinit();
-
-    /* Deinitialize HTTP config server */
-    if (ml->config_httpd) {
-        ml_config_httpd_deinit(ml->config_httpd);
-        ml->config_httpd = NULL;
-    }
-
-    /* Delete queues */
-    if (ml->derp_tx_queue) vQueueDelete(ml->derp_tx_queue);
-    if (ml->disco_rx_queue) vQueueDelete(ml->disco_rx_queue);
-    if (ml->wg_rx_queue) vQueueDelete(ml->wg_rx_queue);
-    if (ml->stun_rx_queue) vQueueDelete(ml->stun_rx_queue);
-    if (ml->coord_cmd_queue) vQueueDelete(ml->coord_cmd_queue);
-    if (ml->peer_update_queue) vQueueDelete(ml->peer_update_queue);
-
-    /* Delete event group */
-    if (ml->events) vEventGroupDelete(ml->events);
-    if (ml->task_exited) vSemaphoreDelete(ml->task_exited);
-    if (ml->auth_lock) vSemaphoreDelete(ml->auth_lock);
-    mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
-
-    /* Clear keys from memory */
-    memset(ml->machine_private_key, 0, 32);
-    memset(ml->wg_private_key, 0, 32);
-    memset(ml->disco_private_key, 0, 32);
-
-    free(ml);
+    /* The peer NVS cache, the HTTP config server, the queues and the
+     * semaphores; then the instance, its keys wiped */
+    instance_free(ml);
     ESP_LOGI(TAG, "Destroyed");
 }
 

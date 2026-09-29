@@ -477,6 +477,7 @@ struct microlink_s {
 
     /* HTTP Config Server (peer allowlist, runtime settings) */
     ml_config_ctx_t *config_httpd;
+    bool peer_nvs_open;                 /* this instance opened the peer NVS cache */
 
     /* NVS-backed config string storage (auth_key/device_name pointers in
      * microlink_config_t are redirected here when NVS settings exist) */
