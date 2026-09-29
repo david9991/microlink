@@ -217,6 +217,14 @@ esp_err_t microlink_factory_reset(void) {
  * Public API
  * ========================================================================== */
 
+/* Empty a queue of received packets, freeing each one's data */
+static void drain_rx_queue(QueueHandle_t q) {
+    ml_rx_packet_t pkt;
+    while (xQueueReceive(q, &pkt, 0) == pdTRUE) {
+        free(pkt.data);
+    }
+}
+
 /* Release what an instance holds, each part only if it was made, then wipe
  * the whole instance — its private keys and its auth key among it — and free
  * it: the end of microlink_destroy, and every way out of a microlink_init
@@ -228,12 +236,35 @@ static void instance_free(microlink_t *ml) {
     if (ml->config_httpd) {
         ml_config_httpd_deinit(ml->config_httpd);
     }
-    if (ml->derp_tx_queue) vQueueDelete(ml->derp_tx_queue);
-    if (ml->disco_rx_queue) vQueueDelete(ml->disco_rx_queue);
-    if (ml->wg_rx_queue) vQueueDelete(ml->wg_rx_queue);
-    if (ml->stun_rx_queue) vQueueDelete(ml->stun_rx_queue);
+    /* The queues, and what is still in them: the tasks that would have
+     * taken it have exited, and each item's data is the heap's */
+    if (ml->derp_tx_queue) {
+        ml_derp_tx_item_t item;
+        while (xQueueReceive(ml->derp_tx_queue, &item, 0) == pdTRUE) {
+            free(item.data);
+        }
+        vQueueDelete(ml->derp_tx_queue);
+    }
+    if (ml->disco_rx_queue) {
+        drain_rx_queue(ml->disco_rx_queue);
+        vQueueDelete(ml->disco_rx_queue);
+    }
+    if (ml->wg_rx_queue) {
+        drain_rx_queue(ml->wg_rx_queue);
+        vQueueDelete(ml->wg_rx_queue);
+    }
+    if (ml->stun_rx_queue) {
+        drain_rx_queue(ml->stun_rx_queue);
+        vQueueDelete(ml->stun_rx_queue);
+    }
     if (ml->coord_cmd_queue) vQueueDelete(ml->coord_cmd_queue);
-    if (ml->peer_update_queue) vQueueDelete(ml->peer_update_queue);
+    if (ml->peer_update_queue) {
+        ml_peer_update_t *update;
+        while (xQueueReceive(ml->peer_update_queue, &update, 0) == pdTRUE) {
+            free(update);
+        }
+        vQueueDelete(ml->peer_update_queue);
+    }
     if (ml->events) vEventGroupDelete(ml->events);
     if (ml->task_exited) vSemaphoreDelete(ml->task_exited);
     if (ml->auth_lock) vSemaphoreDelete(ml->auth_lock);
