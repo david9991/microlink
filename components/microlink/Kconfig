@@ -20,6 +20,16 @@ menu "MicroLink V2 Configuration"
 
             Zero-copy mode contributed by dj-oyu (https://github.com/dj-oyu/microlink)
 
+    config ML_HOSTINFO_OS
+        string "OS this node reports to the control server"
+        default "freertos"
+        help
+            Hostinfo.OS in every request to the control server: what the
+            admin console and `tailscale status` show for this node, and
+            what device-posture rules match. The OS version (ESP-IDF's
+            version and the target) and the architecture are taken from
+            the build.
+
     config ML_MAX_PEERS
         int "Maximum simultaneous WireGuard peers"
         default 16

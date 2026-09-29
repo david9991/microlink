@@ -25,6 +25,7 @@
 #include "x25519.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_idf_version.h"
 #include "esp_random.h"
 #include "esp_netif.h"
 #include "cJSON.h"
@@ -688,6 +689,38 @@ static int do_h2_preface(microlink_t *ml, ml_noise_state_t *noise) {
  * State: REGISTER - Send RegisterRequest, parse RegisterResponse
  * ========================================================================== */
 
+/* ============================================================================
+ * Hostinfo: what this node is, as every request to the control server says
+ * ========================================================================== */
+
+/* Go's name for the architecture the image was built for. */
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+#define HOSTINFO_GOARCH "riscv32"
+#elif CONFIG_IDF_TARGET_ARCH_XTENSA
+#define HOSTINFO_GOARCH "xtensa"
+#else
+#define HOSTINFO_GOARCH "unknown"
+#endif
+
+/* A Hostinfo object with the node's name, OS (CONFIG_ML_HOSTINFO_OS), OS
+ * version ("ESP-IDF <version> (<target>)") and architecture; each request adds
+ * its own NetInfo. NULL when out of memory. */
+static cJSON *hostinfo_new(microlink_t *ml) {
+    cJSON *hostinfo = cJSON_CreateObject();
+    if (!hostinfo) return NULL;
+    const char *dev_name = (ml->config.device_name && ml->config.device_name[0])
+                               ? ml->config.device_name
+                               : microlink_default_device_name();
+    char os_version[64];
+    snprintf(os_version, sizeof(os_version), "ESP-IDF %s (%s)", esp_get_idf_version(),
+             CONFIG_IDF_TARGET);
+    cJSON_AddStringToObject(hostinfo, "Hostname", dev_name);
+    cJSON_AddStringToObject(hostinfo, "OS", CONFIG_ML_HOSTINFO_OS);
+    cJSON_AddStringToObject(hostinfo, "OSVersion", os_version);
+    cJSON_AddStringToObject(hostinfo, "GoArch", HOSTINFO_GOARCH);
+    return hostinfo;
+}
+
 /* The most a RegisterRequest's JSON takes: an auth key of up to a few hundred
  * bytes, the node key, the challenge response and the Hostinfo. */
 #define REGISTER_JSON_MAX 1536
@@ -726,12 +759,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     }
 
     /* Hostinfo */
-    cJSON *hostinfo = cJSON_CreateObject();
-    const char *dev_name = (ml->config.device_name && ml->config.device_name[0]) ? ml->config.device_name : microlink_default_device_name();
-    cJSON_AddStringToObject(hostinfo, "Hostname", dev_name);
-    cJSON_AddStringToObject(hostinfo, "OS", "linux");
-    cJSON_AddStringToObject(hostinfo, "OSVersion", "ESP-IDF");
-    cJSON_AddStringToObject(hostinfo, "GoArch", "arm");
+    cJSON *hostinfo = hostinfo_new(ml);
 
     /* NetInfo inside Hostinfo — control plane reads PreferredDERP from here
      * to populate Node.HomeDERP for other peers */
@@ -1377,12 +1405,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     cJSON_AddStringToObject(root, "Compress", "");  /* Disable compression */
 
     /* Hostinfo */
-    cJSON *hostinfo = cJSON_CreateObject();
-    const char *dev_name = (ml->config.device_name && ml->config.device_name[0]) ? ml->config.device_name : microlink_default_device_name();
-    cJSON_AddStringToObject(hostinfo, "Hostname", dev_name);
-    cJSON_AddStringToObject(hostinfo, "OS", "linux");
-    cJSON_AddStringToObject(hostinfo, "OSVersion", "ESP-IDF");
-    cJSON_AddStringToObject(hostinfo, "GoArch", "arm");
+    cJSON *hostinfo = hostinfo_new(ml);
     cJSON_AddItemToObject(root, "Hostinfo", hostinfo);
 
     /* NetInfo: tell control plane our preferred DERP region and NAT type.
@@ -1861,13 +1884,8 @@ static int do_start_long_poll(microlink_t *ml, ml_noise_state_t *noise) {
 
     /* Hostinfo - REQUIRED by control plane even for Stream=true.
      * V1 includes this; without it, server may not keep us "online". */
-    cJSON *hostinfo = cJSON_CreateObject();
+    cJSON *hostinfo = hostinfo_new(ml);
     if (hostinfo) {
-        const char *dev_name = (ml->config.device_name && ml->config.device_name[0]) ? ml->config.device_name : microlink_default_device_name();
-        cJSON_AddStringToObject(hostinfo, "Hostname", dev_name);
-        cJSON_AddStringToObject(hostinfo, "OS", "linux");
-        cJSON_AddStringToObject(hostinfo, "OSVersion", "ESP-IDF");
-        cJSON_AddStringToObject(hostinfo, "GoArch", "arm");
         cJSON_AddItemToObject(root, "Hostinfo", hostinfo);
     }
 
@@ -1966,13 +1984,8 @@ static int do_send_endpoint_update(microlink_t *ml, ml_noise_state_t *noise) {
     cJSON_AddStringToObject(root, "Compress", "");
 
     /* Hostinfo (required — control plane reads NetInfo from here) */
-    cJSON *hostinfo = cJSON_CreateObject();
+    cJSON *hostinfo = hostinfo_new(ml);
     if (hostinfo) {
-        const char *dev_name = (ml->config.device_name && ml->config.device_name[0]) ? ml->config.device_name : microlink_default_device_name();
-        cJSON_AddStringToObject(hostinfo, "Hostname", dev_name);
-        cJSON_AddStringToObject(hostinfo, "OS", "linux");
-        cJSON_AddStringToObject(hostinfo, "OSVersion", "ESP-IDF");
-        cJSON_AddStringToObject(hostinfo, "GoArch", "arm");
         cJSON_AddItemToObject(root, "Hostinfo", hostinfo);
 
         cJSON *netinfo = cJSON_CreateObject();
