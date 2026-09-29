@@ -33,6 +33,7 @@
 #include "lwip/netdb.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/platform_util.h"
+#include "ml_register.h"
 #include <string.h>
 #include <errno.h>
 
@@ -733,8 +734,37 @@ static void free_wiped(void *p, size_t len) {
     }
 }
 
+/* Record what a registration was answered, and fail it unless authorised.
+ * The authorisation record changes only on what answers the node key: an
+ * authorisation, a node key expired, or a turn-down of a request that carried
+ * no auth key — one that carried a key may have been turned down for the key. */
+static int registration_answered(microlink_t *ml, microlink_registration_t answer, bool sent_key,
+                                 int status) {
+    ml->registration_with_key = sent_key;
+    ml->registration = answer;
+    if (answer == ML_REGISTRATION_AUTHORIZED) {
+        ml_identity_authorized(true);
+        return 0;
+    }
+    if (answer == ML_REGISTRATION_KEY_EXPIRED ||
+        (!sent_key && answer != ML_REGISTRATION_UNREADABLE)) {
+        ml_identity_authorized(false);
+    }
+    ESP_LOGW(TAG, "Registration failed: %s (status %d)%s",
+             answer == ML_REGISTRATION_REFUSED         ? "refused"
+             : answer == ML_REGISTRATION_KEY_EXPIRED   ? "node key expired"
+             : answer == ML_REGISTRATION_UNREADABLE    ? "answer unreadable"
+                                                       : "login or approval pending",
+             status, sent_key ? ", auth key sent" : "");
+    return -1;
+}
+
 static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     int64_t t_reg_start = esp_timer_get_time();
+
+    /* No answer while this registration is under way */
+    ml->registration = ML_REGISTRATION_NONE;
+    ml->registration_with_key = false;
 
     /* Build RegisterRequest JSON */
     cJSON *root = cJSON_CreateObject();
@@ -908,6 +938,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
 
     /* Parse H2 frames from accumulated buffer */
     bool got_end_stream = false;
+    int status = 0;  /* the response's :status, once its HEADERS frame is read */
     int fpos = 0;
     while (fpos + 9 <= (int)h2_resp_len) {
         uint32_t f_len = (h2_resp[fpos] << 16) | (h2_resp[fpos + 1] << 8) | h2_resp[fpos + 2];
@@ -935,12 +966,20 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
                 }
                 if (f_flags & 0x01) got_end_stream = true;
             }
+            if (f_type == 0x01 && status == 0) {
+                status = ml_h2_response_status(h2_resp + fpos, f_len, f_flags);
+            }
             if (f_type == 0x01 && (f_flags & 0x01)) got_end_stream = true;
         }
 
         fpos += f_len;
     }
     free(h2_resp);
+
+    /* What the answer was, as far as it is read: a missing or unparsable body
+     * and a status that is not 2xx are answers too (a plain-text 401 for a
+     * spent key, say), and fail the registration. */
+    ml_register_reply_t reply = {.status = status};
 
     /* Send connection-level WINDOW_UPDATE for RegisterResponse.
      * Stream 1 is closed (END_STREAM received), only update connection level. */
@@ -955,8 +994,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     if (resp_total == 0) {
         ESP_LOGW(TAG, "No DATA frame in RegisterResponse");
         free(resp_buf);
-        /* Not fatal - server may just return headers-only 200 */
-        return 0;
+        return registration_answered(ml, ml_register_classify(&reply), sent_key, status);
     }
 
     uint8_t *json_data = resp_buf;
@@ -990,7 +1028,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     } else if (json_offset < 0) {
         ESP_LOGW(TAG, "No '{' found in RegisterResponse data");
         free(resp_buf);
-        return 0;
+        return registration_answered(ml, ml_register_classify(&reply), sent_key, status);
     }
 
     /* Null-terminate for cJSON */
@@ -1003,10 +1041,30 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
         ESP_LOGW(TAG, "First 100 chars: %.100s", parse_start);
         parse_start[parse_len] = saved;
         free(resp_buf);
-        return 0;  /* Not fatal - we'll get peers in MapResponse */
+        return registration_answered(ml, ml_register_classify(&reply), sent_key, status);
     }
     parse_start[parse_len] = saved;
     free(resp_buf);
+
+    /* Whether the control server authorised this node (tailcfg.RegisterResponse):
+     * MachineAuthorized, with no AuthURL still to visit, no Error and the node
+     * key not expired. Kept, so a later start knows it may register without a
+     * key (microlink_has_identity), and told (microlink_get_registration). A
+     * registration not authorised fails: no session follows from it, and the
+     * next one may go without a key its caller has since emptied. */
+    {
+        const cJSON *auth_url = cJSON_GetObjectItem(resp_json, "AuthURL");
+        const cJSON *error = cJSON_GetObjectItem(resp_json, "Error");
+        reply.body = true;
+        reply.auth_url = cJSON_IsString(auth_url) && auth_url->valuestring[0] != '\0';
+        reply.error = cJSON_IsString(error) && error->valuestring[0] != '\0';
+        reply.node_key_expired = cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "NodeKeyExpired"));
+        reply.machine_authorized = cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "MachineAuthorized"));
+        if (registration_answered(ml, ml_register_classify(&reply), sent_key, status) < 0) {
+            cJSON_Delete(resp_json);
+            return -1;
+        }
+    }
 
     /* Extract our VPN IP from Node.Addresses */
     cJSON *node = cJSON_GetObjectItem(resp_json, "Node");
@@ -1055,38 +1113,6 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
             char our_key_hex[65];
             bytes_to_hex(ml->wg_public_key, 32, our_key_hex);
             ESP_LOGI(TAG, "Our WG pubkey (local):       nodekey:%s", our_key_hex);
-        }
-    }
-
-    /* Whether the control server authorised this node (tailcfg.RegisterResponse):
-     * MachineAuthorized, with no AuthURL still to visit, no Error and the node
-     * key not expired. Kept, so a later start knows it may register without a
-     * key (microlink_has_identity), and told (microlink_get_registration). A
-     * registration not authorised fails: no session follows from it, and the
-     * next one may go without a key its caller has since emptied. */
-    {
-        const cJSON *auth_url = cJSON_GetObjectItem(resp_json, "AuthURL");
-        const cJSON *error = cJSON_GetObjectItem(resp_json, "Error");
-        const bool pending = cJSON_IsString(auth_url) && auth_url->valuestring[0] != '\0';
-        microlink_registration_t answer = ML_REGISTRATION_AUTHORIZED;
-        if (cJSON_IsString(error) && error->valuestring[0] != '\0') {
-            answer = ML_REGISTRATION_REFUSED;
-        } else if (cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "NodeKeyExpired"))) {
-            answer = ML_REGISTRATION_KEY_EXPIRED;
-        } else if (pending || !cJSON_IsTrue(cJSON_GetObjectItem(resp_json, "MachineAuthorized"))) {
-            answer = ML_REGISTRATION_NOT_AUTHORIZED;
-        }
-        ml->registration_with_key = sent_key;
-        ml->registration = answer;
-        ml_identity_authorized(answer == ML_REGISTRATION_AUTHORIZED);
-        if (answer != ML_REGISTRATION_AUTHORIZED) {
-            ESP_LOGW(TAG, "Registration not authorised (%s)%s",
-                     answer == ML_REGISTRATION_REFUSED       ? "refused"
-                     : answer == ML_REGISTRATION_KEY_EXPIRED ? "node key expired"
-                                                             : "login or approval pending",
-                     sent_key ? ", auth key sent" : "");
-            cJSON_Delete(resp_json);
-            return -1;
         }
     }
 

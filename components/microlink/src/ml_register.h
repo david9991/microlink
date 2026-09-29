@@ -1,0 +1,48 @@
+/**
+ * @file ml_register.h
+ * @brief What a registration was answered: pure functions, built and tested on the host too
+ *
+ * No ESP-IDF call here: host_test/ builds these with the host's compiler.
+ */
+
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "microlink.h"
+
+/* What a RegisterResponse carried */
+typedef struct {
+    int status;               /* its HTTP :status; 0 when none could be read */
+    bool body;                /* a JSON object was read from its body */
+    bool machine_authorized;  /* MachineAuthorized */
+    bool node_key_expired;    /* NodeKeyExpired */
+    bool auth_url;            /* a non-empty AuthURL */
+    bool error;               /* a non-empty Error */
+} ml_register_reply_t;
+
+/**
+ * @brief The answer a reply stands for
+ *
+ * A status that is not 2xx is REFUSED (a plain-text 401 for a spent key, say);
+ * a reply with no JSON body is UNREADABLE; otherwise the body decides: an
+ * Error is REFUSED, NodeKeyExpired KEY_EXPIRED, an AuthURL or no
+ * MachineAuthorized NOT_AUTHORIZED, and only what is left AUTHORIZED.
+ */
+microlink_registration_t ml_register_classify(const ml_register_reply_t *reply);
+
+/**
+ * @brief The :status of a response's HEADERS frame
+ * @param payload The frame's payload
+ * @param len Its length
+ * @param flags The frame's flags (PADDED and PRIORITY move the header block)
+ * @return The status, or 0 when the block does not start with one this can read
+ *
+ * A server sends :status first. Read: an indexed field of the static table
+ * (200, 204, 206, 304, 400, 404, 500), or a literal whose name is :status,
+ * its value plain or Huffman-coded digits — after any dynamic table size
+ * updates.
+ */
+int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags);
