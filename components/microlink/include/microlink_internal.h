@@ -45,19 +45,19 @@ extern "C" {
 /* Task configuration */
 #define ML_TASK_NET_IO_STACK    (8 * 1024)
 #define ML_TASK_NET_IO_PRIO     7
-#define ML_TASK_NET_IO_CORE     0
+#define ML_TASK_NET_IO_CORE     CONFIG_ML_TASK_NET_IO_CORE
 
 #define ML_TASK_DERP_TX_STACK   (14 * 1024)
 #define ML_TASK_DERP_TX_PRIO    5
-#define ML_TASK_DERP_TX_CORE    0
+#define ML_TASK_DERP_TX_CORE    CONFIG_ML_TASK_DERP_TX_CORE
 
 #define ML_TASK_COORD_STACK     (12 * 1024)
 #define ML_TASK_COORD_PRIO      5
-#define ML_TASK_COORD_CORE      1
+#define ML_TASK_COORD_CORE      CONFIG_ML_TASK_COORD_CORE
 
 #define ML_TASK_WG_MGR_STACK    (8 * 1024)
 #define ML_TASK_WG_MGR_PRIO     7
-#define ML_TASK_WG_MGR_CORE     1
+#define ML_TASK_WG_MGR_CORE     CONFIG_ML_TASK_WG_MGR_CORE
 
 /* Queue depths */
 #define ML_DERP_TX_QUEUE_DEPTH  16

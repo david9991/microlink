@@ -323,4 +323,36 @@ menu "MicroLink V2 Configuration"
 
     endmenu
 
+    menu "Task cores"
+
+        config ML_TASK_NET_IO_CORE
+            int "Core the network I/O task is pinned to"
+            range 0 1
+            default 0
+
+        config ML_TASK_DERP_TX_CORE
+            int "Core the DERP transmit task is pinned to"
+            range 0 1
+            default 0
+
+        config ML_TASK_COORD_CORE
+            int "Core the coordination task is pinned to"
+            range 0 1
+            default 0 if FREERTOS_UNICORE
+            default 1
+            help
+                On a single-core FreeRTOS build every task runs on core 0; the
+                other core may not be running FreeRTOS at all.
+
+        config ML_TASK_WG_MGR_CORE
+            int "Core the WireGuard manager task is pinned to"
+            range 0 1
+            default 0 if FREERTOS_UNICORE
+            default 1
+            help
+                On a single-core FreeRTOS build every task runs on core 0; the
+                other core may not be running FreeRTOS at all.
+
+    endmenu
+
 endmenu
