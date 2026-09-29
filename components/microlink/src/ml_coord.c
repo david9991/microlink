@@ -108,7 +108,7 @@ static int coord_send(microlink_t *ml, const uint8_t *data, size_t len) {
 
 static int coord_recv(microlink_t *ml, uint8_t *buf, size_t len) {
     size_t recvd = 0;
-    int retries = 0;
+    uint64_t partial_deadline = 0;  /* set once a first byte has been taken */
     while (recvd < len) {
         int n = ml_recv(ml->coord_sock, buf + recvd, len - recvd, 0);
         if (n <= 0) {
@@ -118,8 +118,12 @@ static int coord_recv(microlink_t *ml, uint8_t *buf, size_t len) {
                     return -1;
                 }
                 /* Partial data consumed — we MUST finish this read or the
-                 * Noise frame stream will be misaligned. Retry with backoff. */
-                if (++retries > 300) {  /* ~3 seconds */
+                 * Noise frame stream will be misaligned. Retry until the
+                 * deadline, or a stop. */
+                if (partial_deadline == 0) {
+                    partial_deadline = ml_get_time_ms() + ML_PARTIAL_READ_MS;
+                }
+                if (ml_get_time_ms() >= partial_deadline || ml_stopping(ml, 0)) {
                     ESP_LOGE(TAG, "coord_recv partial timeout: %d/%d bytes",
                              (int)recvd, (int)len);
                     return -1;
@@ -132,7 +136,6 @@ static int coord_recv(microlink_t *ml, uint8_t *buf, size_t len) {
             return -1;
         }
         recvd += n;
-        retries = 0;  /* Reset on successful read */
     }
     return 0;
 }
@@ -192,14 +195,14 @@ static int noise_recv(microlink_t *ml, ml_noise_state_t *noise,
     /* Header already consumed — payload read MUST complete or stream
      * alignment is permanently lost. Retry EAGAIN (coord_recv returns -1
      * with errno==EAGAIN if recvd==0 on first byte). */
-    int payload_retries = 0;
+    const uint64_t payload_deadline = ml_get_time_ms() + ML_PARTIAL_READ_MS;
     while (coord_recv(ml, ciphertext, ct_len) < 0) {
-        if ((errno == EAGAIN || errno == EWOULDBLOCK) && ++payload_retries <= 300) {
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && ml_get_time_ms() < payload_deadline &&
+            !ml_stopping(ml, 0)) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        ESP_LOGE(TAG, "noise_recv payload failed: ct_len=%d retries=%d errno=%d",
-                 ct_len, payload_retries, errno);
+        ESP_LOGE(TAG, "noise_recv payload failed: ct_len=%d errno=%d", ct_len, errno);
         free(ciphertext);
         return -1;
     }

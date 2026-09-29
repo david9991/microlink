@@ -109,6 +109,10 @@ extern "C" {
  * the send and receive timeout of its socket */
 #define ML_CONNECT_TIMEOUT_MS           10000
 
+/* How long a Noise frame begun on the control connection may take to finish
+ * arriving, past the socket's own timeout for the read under way */
+#define ML_PARTIAL_READ_MS              3000
+
 /* Control plane timing */
 #define ML_CTRL_WATCHDOG_MS             120000
 #define ML_CTRL_BACKOFF_MAX_MS          30000
