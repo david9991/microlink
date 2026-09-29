@@ -120,32 +120,64 @@ static void full_maps(void) {
     CHECK(count == 1, "last: count %d", count);
 }
 
+/* The board's own tailnet */
+static const char *own = "tail1.ts.net";
+
+static uint32_t resolve(const char *name) {
+    return ml_peers_resolve(peers, count, own, name);
+}
+
 static void names(void) {
     reset();
     peer(0, "control-host.tail1.ts.net", 0x64400001, false);
     peer(1, "contro", 0x64400002, true);  /* cached: name cut to 6 */
     peer(2, "Laptop.tail1.ts.net", 0x64400003, false);
     peer(3, "nodot", 0x64400004, false);
-    CHECK(ml_peers_resolve(peers, count, "control-host.tail1.ts.net") == 0x64400001, "full name");
-    CHECK(ml_peers_resolve(peers, count, "CONTROL-HOST.tail1.ts.net") == 0x64400001, "any case");
-    CHECK(ml_peers_resolve(peers, count, "control-host") == 0x64400001, "first label");
-    CHECK(ml_peers_resolve(peers, count, "laptop") == 0x64400003, "first label, any case");
-    CHECK(ml_peers_resolve(peers, count, "nodot") == 0x64400004, "a name without a dot");
+    CHECK(resolve("control-host.tail1.ts.net") == 0x64400001, "full name");
+    CHECK(resolve("CONTROL-HOST.tail1.ts.net") == 0x64400001, "any case");
+    CHECK(resolve("control-host") == 0x64400001, "first label");
+    CHECK(resolve("laptop") == 0x64400003, "first label, any case");
+    CHECK(resolve("nodot") == 0x64400004, "a name without a dot");
     /* A cached peer never answers, not even by its own cut name */
-    CHECK(ml_peers_resolve(peers, count, "contro") == 0, "cached peer");
+    CHECK(resolve("contro") == 0, "cached peer");
     /* A prefix that is not a whole label, or a longer name, is not a match */
-    CHECK(ml_peers_resolve(peers, count, "control") == 0, "part of a label");
-    CHECK(ml_peers_resolve(peers, count, "control-host.tail1") == 0, "part of the name");
-    CHECK(ml_peers_resolve(peers, count, "control-host.tail1.ts.net.x") == 0, "longer name");
-    CHECK(ml_peers_resolve(peers, count, "") == 0, "empty");
-    CHECK(ml_peers_resolve(peers, count, NULL) == 0, "none");
+    CHECK(resolve("control") == 0, "part of a label");
+    CHECK(resolve("control-host.tail1") == 0, "part of the name");
+    CHECK(resolve("control-host.tail1.ts.net.x") == 0, "longer name");
+    CHECK(resolve("") == 0, "empty");
+    CHECK(resolve(NULL) == 0, "none");
     /* The map replaces the cached peer: then it answers by its whole name */
     peer(1, "contro-box.tail1.ts.net", 0x64400002, false);
-    CHECK(ml_peers_resolve(peers, count, "contro-box") == 0x64400002, "no longer cached");
-    CHECK(ml_peers_resolve(peers, count, "contro") == 0, "and not by the cut name");
+    CHECK(resolve("contro-box") == 0x64400002, "no longer cached");
+    CHECK(resolve("contro") == 0, "and not by the cut name");
     /* An inactive slot never answers */
     peers[2].active = false;
-    CHECK(ml_peers_resolve(peers, count, "laptop") == 0, "inactive");
+    CHECK(resolve("laptop") == 0, "inactive");
+
+    /* A node shared in from another tailnet, listed first, with the same
+     * first label as one of the board's own, and one with a label of its
+     * own: a first label never finds them, their full names do */
+    reset();
+    peer(0, "control-host.other.ts.net", 0x64500001, false);
+    peer(1, "control-host.tail1.ts.net", 0x64400001, false);
+    peer(2, "shared-box.other.ts.net", 0x64500002, false);
+    peer(3, "evil.tail1.ts.net.other.ts.net", 0x64500003, false);
+    CHECK(resolve("control-host") == 0x64400001, "first label: the board's own tailnet's node");
+    CHECK(resolve("shared-box") == 0, "first label of a shared-in node");
+    CHECK(resolve("SHARED-BOX") == 0, "first label of a shared-in node, any case");
+    CHECK(resolve("shared-box.other.ts.net") == 0x64500002, "full name of a shared-in node");
+    CHECK(resolve("control-host.other.ts.net") == 0x64500001, "full name, the other tailnet's");
+    CHECK(resolve("evil") == 0, "a domain that only starts with the board's own");
+    /* The board's domain in another case still is the board's */
+    own = "TAIL1.ts.net";
+    CHECK(resolve("control-host") == 0x64400001, "own domain, any case");
+    /* Until the board knows its own domain, no first label resolves */
+    own = "";
+    CHECK(resolve("control-host") == 0, "own domain unknown");
+    CHECK(resolve("control-host.tail1.ts.net") == 0x64400001, "full name, own domain unknown");
+    own = NULL;
+    CHECK(resolve("control-host") == 0, "no own domain");
+    own = "tail1.ts.net";
 }
 
 int main(void) {

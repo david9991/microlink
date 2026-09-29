@@ -890,5 +890,5 @@ uint64_t ml_get_time_ms(void) {
 
 uint32_t microlink_resolve(const microlink_t *ml, const char *hostname) {
     if (!ml) return 0;
-    return ml_peers_resolve(ml->peers, ml->peer_count, hostname);
+    return ml_peers_resolve(ml->peers, ml->peer_count, ml->own_domain, hostname);
 }

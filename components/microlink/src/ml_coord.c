@@ -130,6 +130,22 @@ static void coord_rcvtimeo(microlink_t *ml, uint32_t ms) {
  * finished by then, or at a stop, fails with ETIMEDOUT or ECANCELED — its
  * stream is lost, and the caller must not read on. A closed connection fails
  * with ECONNRESET. */
+/* The board's own tailnet domain, from its node's Name
+ * ("host.tail1234.ts.net."): what follows the first label, the trailing dot
+ * taken off. Kept only when it fits whole, and written only when it changes. */
+static void note_own_domain(microlink_t *ml, const cJSON *node) {
+    const cJSON *name = cJSON_GetObjectItem(node, "Name");
+    if (!cJSON_IsString(name)) return;
+    const char *dot = strchr(name->valuestring, '.');
+    if (!dot) return;
+    size_t len = strlen(dot + 1);
+    if (len > 0 && dot[len] == '.') len--;
+    if (len == 0 || len >= sizeof(ml->own_domain)) return;
+    if (strncmp(ml->own_domain, dot + 1, len) == 0 && ml->own_domain[len] == '\0') return;
+    memcpy(ml->own_domain, dot + 1, len);
+    ml->own_domain[len] = '\0';
+}
+
 static int coord_recv_by(microlink_t *ml, uint8_t *buf, size_t len, uint64_t *deadline) {
     size_t recvd = 0;
     bool clamped = false;
@@ -1824,6 +1840,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     {
         cJSON *node = cJSON_GetObjectItem(map_json, "Node");
         if (node) {
+            note_own_domain(ml, node);
             /* Extract VPN IP if not already set */
             if (ml->vpn_ip == 0) {
                 cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
@@ -2304,6 +2321,7 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
         /* Update VPN IP if present */
         cJSON *node = cJSON_GetObjectItem(update_json, "Node");
         if (node) {
+            note_own_domain(ml, node);
             cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
             if (addresses && cJSON_GetArraySize(addresses) > 0) {
                 const char *addr = cJSON_GetArrayItem(addresses, 0)->valuestring;

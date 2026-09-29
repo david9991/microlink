@@ -323,6 +323,11 @@ struct microlink_s {
     /* A full peer map has been applied since start (written by wg_mgr) */
     volatile bool map_applied;
 
+    /* The board's own tailnet domain ("tail1234.ts.net"), from its node's
+     * Name in a MapResponse; empty until then. Written by coord only when it
+     * changes: a peer's first label resolves only within it. */
+    char own_domain[64];
+
     /* The last registration's answer, and whether it carried the auth key
      * (written by coord) */
     volatile microlink_registration_t registration;

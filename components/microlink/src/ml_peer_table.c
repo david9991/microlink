@@ -50,7 +50,8 @@ static bool same_name(const char *a, const char *b, size_t len) {
     return true;
 }
 
-uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *name) {
+uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_domain,
+                          const char *name) {
     if (!name || name[0] == '\0') return 0;
     const size_t name_len = strlen(name);
     for (int i = 0; i < count; i++) {
@@ -64,9 +65,11 @@ uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *name) {
         }
 
         /* 2. Prefix match: query "npc1" matches peer "npc1.tail12345.ts.net"
-         * The query must match up to the first '.' in the peer hostname. */
+         * The query must match up to the first '.' in the peer hostname, and
+         * the rest be the board's own tailnet: never a node shared in. */
         const char *dot = strchr(p->hostname, '.');
-        if (dot) {
+        if (dot && own_domain && own_domain[0] != '\0' &&
+            same_name(dot + 1, own_domain, sizeof(p->hostname))) {
             const size_t short_len = (size_t)(dot - p->hostname);
             if (name_len == short_len && same_name(p->hostname, name, short_len)) {
                 return p->vpn_ip;

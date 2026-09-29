@@ -103,10 +103,15 @@ bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete,
  * @brief The address a name resolves to among the peers, 0 when none
  * @param peers The table
  * @param count Its count of slots in use
+ * @param own_domain The board's own tailnet domain ("tail1234.ts.net"),
+ *        empty (or NULL) while not known
  * @param name A peer's full name, or its first label
  *
- * A peer's full name ("host.tail1234.ts.net", any case) resolves, and so
- * does its first label ("host"). A cached peer never resolves: its name is
- * cut, and could stand for another.
+ * A peer's full name ("host.tail1234.ts.net", any case) always resolves; its
+ * first label ("host") only when the rest of its name is `own_domain`, so a
+ * node shared in from another tailnet is found by its full name alone, and
+ * while the board's own domain is not known no first label resolves. A
+ * cached peer never resolves: its name is cut, and could stand for another.
  */
-uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *name);
+uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_domain,
+                          const char *name);
