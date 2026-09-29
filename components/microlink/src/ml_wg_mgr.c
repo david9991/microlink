@@ -708,7 +708,7 @@ static void full_map_applied(microlink_t *ml, bool complete) {
         if (ml_peers_map_drops(&ml->peers[i], complete)) unlink_peer(ml, i);
     }
     ml_peers_lock(ml);
-    ml->map_applied = ml_peers_map_end(ml->peers, &ml->peer_count, complete, NULL, NULL);
+    ml->map_applied = ml_peers_map_end(ml->peers, &ml->peer_count, complete);
     ml_peers_unlock(ml);
 }
 

@@ -41,14 +41,18 @@ static void reset(void) {
     count = 0;
 }
 
-/* The slots a map's end dropped, in order */
+/* The slots a map's end drops, in order */
 static int dropped[PEERS];
 static int drops;
 
-static void drop(void *ctx, int idx) {
-    CHECK(ctx == &drops, "drop's context");
-    CHECK(peers[idx].active, "slot %d dropped while still active", idx);
-    dropped[drops++] = idx;
+/* A map's end as the WG manager makes it: the slots ml_peers_map_drops
+ * selects are dropped first, then ml_peers_map_end forgets them */
+static bool end_map(bool complete) {
+    drops = 0;
+    for (int i = 0; i < count; i++) {
+        if (ml_peers_map_drops(&peers[i], complete)) dropped[drops++] = i;
+    }
+    return ml_peers_map_end(peers, &count, complete);
 }
 
 /* What the WG manager does with a full map: BEGIN, an ADD per peer of it
@@ -59,8 +63,7 @@ static bool apply_map(const int *in_map, int n, bool complete) {
         peers[in_map[i]].in_map = true;
         peers[in_map[i]].cached = false;
     }
-    drops = 0;
-    return ml_peers_map_end(peers, &count, complete, drop, &drops);
+    return end_map(complete);
 }
 
 static void full_maps(void) {
@@ -340,8 +343,7 @@ static void random_map_ends(void) {
         ml_peer_t before[PEERS];
         memcpy(before, peers, sizeof before);
         const int count_before = count;
-        drops = 0;
-        CHECK(ml_peers_map_end(peers, &count, complete, drop, &drops), "round %d: applied", round);
+        CHECK(end_map(complete), "round %d: applied", round);
         /* The model: a complete map drops, in order, every active slot not in
          * it; the count ends past the last active slot, and never grows */
         int want_drops = 0;

@@ -46,11 +46,9 @@ bool ml_peers_map_drops(const ml_peer_t *peer, bool complete) {
     return complete && peer->active && !peer->in_map;
 }
 
-bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete,
-                      void (*drop)(void *ctx, int idx), void *ctx) {
+bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete) {
     for (int i = 0; i < *count; i++) {
         if (ml_peers_map_drops(&peers[i], complete)) {
-            if (drop) drop(ctx, i);
             ml_peers_forget(peers, count, i);
         }
     }

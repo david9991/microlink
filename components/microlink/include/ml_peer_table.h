@@ -110,15 +110,13 @@ bool ml_peers_map_drops(const ml_peer_t *peer, bool complete);
  * @param peers The table
  * @param count Its count of slots in use, updated
  * @param complete Every peer of the map was queued as an ADD
- * @param drop Called with each dropped peer's slot before it is forgotten;
- *        may be NULL (the caller then drops what ml_peers_map_drops selects
- *        before calling this)
- * @param ctx Passed to `drop`
  * @return true: the map is applied, complete or not — names then resolve
  *         among the peers it added, never among cached ones
+ *
+ * The caller drops what ml_peers_map_drops selects — its WireGuard peers —
+ * before calling this.
  */
-bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete,
-                      void (*drop)(void *ctx, int idx), void *ctx);
+bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete);
 
 /**
  * @brief The address a name resolves to among the peers, 0 when none
