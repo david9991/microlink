@@ -836,11 +836,27 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
      * than copying it, so only the printed request and its frame hold it, and
      * both are wiped before they are freed. */
     xSemaphoreTake(ml->auth_lock, portMAX_DELAY);
-    const bool sent_key = ml->auth_key[0] != '\0';
-    if (sent_key) {
+    bool sent_key = false;  /* the key's node is in the request */
+    if (ml->auth_key[0] != '\0') {
         cJSON *auth = cJSON_CreateObject();
-        cJSON_AddItemToObject(auth, "AuthKey", cJSON_CreateStringReference(ml->auth_key));
-        cJSON_AddItemToObject(root, "Auth", auth);
+        cJSON *key = auth ? cJSON_CreateStringReference(ml->auth_key) : NULL;
+        if (key && cJSON_AddItemToObject(auth, "AuthKey", key)) {
+            key = NULL;  /* auth's now */
+            if (cJSON_AddItemToObject(root, "Auth", auth)) {
+                auth = NULL;  /* root's now */
+                sent_key = true;
+            }
+        }
+        cJSON_Delete(key);   /* a reference: the key itself is not freed */
+        cJSON_Delete(auth);
+        if (!sent_key) {
+            /* A request without the key it was meant to carry would be
+             * answered for the node key alone: do not send it. */
+            cJSON_Delete(root);
+            xSemaphoreGive(ml->auth_lock);
+            ESP_LOGE(TAG, "No memory for the RegisterRequest's auth key");
+            return -1;
+        }
     }
 
     /* Hostinfo */
