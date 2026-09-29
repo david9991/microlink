@@ -131,6 +131,8 @@ bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete,
  * first label ("host") only when the rest of its name is `own_domain`, so a
  * node shared in from another tailnet is found by its full name alone, and
  * while the board's own domain is not known no first label resolves. A
+ * peer's name with no domain ("host", "host.") never resolves, not even
+ * whole: nothing says which tailnet it is in. A
  * cached peer, and one whose name did not fit whole, never resolves: its
  * name is cut, and could stand for another.
  */

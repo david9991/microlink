@@ -79,23 +79,25 @@ uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_dom
         const ml_peer_t *p = &peers[i];
         /* A cached peer's name is cut, and so is one that did not fit: it
          * could stand for another peer */
-        if (!p->active || p->cached || p->name_cut || p->hostname[0] == '\0') continue;
+        if (!p->active || p->cached || p->name_cut) continue;
 
-        /* 1. Exact match (case-insensitive) */
+        /* A name with no domain cannot be placed in the board's own tailnet
+         * or in another: it answers for nothing, by itself or as a label */
+        const char *dot = strchr(p->hostname, '.');
+        if (!dot || dot[1] == '\0') continue;
+
+        /* 1. Its full name, any case */
         if (same_name(p->hostname, name, sizeof(p->hostname))) {
             return p->vpn_ip;
         }
 
-        /* 2. Prefix match: query "npc1" matches peer "npc1.tail12345.ts.net"
-         * The query must match up to the first '.' in the peer hostname, and
-         * the rest be the board's own tailnet: never a node shared in. */
-        const char *dot = strchr(p->hostname, '.');
-        if (dot && own_domain && own_domain[0] != '\0' &&
+        /* 2. Its first label ("npc1" for "npc1.tail12345.ts.net"), when the
+         * rest of its name is the board's own tailnet: never a node shared in */
+        const size_t short_len = (size_t)(dot - p->hostname);
+        if (own_domain && own_domain[0] != '\0' && name_len == short_len &&
+            same_name(p->hostname, name, short_len) &&
             same_name(dot + 1, own_domain, sizeof(p->hostname))) {
-            const size_t short_len = (size_t)(dot - p->hostname);
-            if (name_len == short_len && same_name(p->hostname, name, short_len)) {
-                return p->vpn_ip;
-            }
+            return p->vpn_ip;
         }
     }
     return 0;

@@ -137,7 +137,8 @@ static void names(void) {
     CHECK(resolve("CONTROL-HOST.tail1.ts.net") == 0x64400001, "any case");
     CHECK(resolve("control-host") == 0x64400001, "first label");
     CHECK(resolve("laptop") == 0x64400003, "first label, any case");
-    CHECK(resolve("nodot") == 0x64400004, "a name without a dot");
+    /* A name with no domain answers for nothing, not even itself */
+    CHECK(resolve("nodot") == 0, "a name without a dot");
     /* A cached peer never answers, not even by its own cut name */
     CHECK(resolve("contro") == 0, "cached peer");
     /* A prefix that is not a whole label, or a longer name, is not a match */
