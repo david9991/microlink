@@ -762,8 +762,16 @@ static int do_h2_preface(microlink_t *ml, ml_noise_state_t *noise) {
     uint8_t recv_buf[4096];
     int recv_len = noise_recv(ml, noise, recv_buf, sizeof(recv_buf));
     if (recv_len < 0) {
+        /* Nothing yet (EAGAIN) is not fatal: the server may send its frames
+         * later. Anything else — a frame begun and given up, a closed
+         * connection, a frame that does not decrypt — has lost the stream,
+         * and nothing read after it would be in step. */
+        const int err = errno;
+        if (err != EAGAIN && err != EWOULDBLOCK) {
+            ESP_LOGE(TAG, "H2 preface: the server's response failed (errno %d)", err);
+            return -1;
+        }
         ESP_LOGW(TAG, "No immediate H2 response from server (may come later)");
-        /* Not fatal - server may send its frames later */
     } else {
         ESP_LOGI(TAG, "Server H2 response: %d bytes", recv_len);
     }
