@@ -5,6 +5,8 @@
 
 #include "ml_register.h"
 
+#include <string.h>
+
 microlink_registration_t ml_register_classify(const ml_register_reply_t *reply) {
     if (reply->status == 401 || reply->status == 403) {
         return ML_REGISTRATION_REFUSED;
@@ -68,20 +70,37 @@ static int huffman_digits(const uint8_t *p, size_t len) {
         }
         value = value * 10 + d;
     }
+    /* What is left is padding: fewer than 8 bits, all ones (EOS's first) */
+    if (bits - bit > 7) return 0;
+    for (; bit < bits; bit++) {
+        if (!((p[bit / 8] >> (7 - bit % 8)) & 1)) return 0;
+    }
     return value;
 }
 
-int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags) {
+/* Where a HEADERS frame's header block fragment lies in its payload, PADDED
+ * and PRIORITY taken off; false when they do not fit */
+static bool headers_fragment(const uint8_t *payload, size_t len, uint8_t flags,
+                             size_t *start, size_t *end) {
     size_t pos = 0;
-    size_t end = len;
+    size_t stop = len;
     if (flags & 0x08) {  /* PADDED */
-        if (len < 1 || payload[0] >= len) return 0;
-        end = len - payload[0];
+        if (len < 1 || payload[0] >= len) return false;
+        stop = len - payload[0];
         pos = 1;
     }
     if (flags & 0x20) {  /* PRIORITY */
         pos += 5;
     }
+    if (pos > stop) return false;
+    *start = pos;
+    *end = stop;
+    return true;
+}
+
+/* The :status a whole header block starts with; 0 when it starts otherwise */
+static int block_status(const uint8_t *payload, size_t end) {
+    size_t pos = 0;
     if (pos >= end) return 0;
     /* Dynamic table size updates (001xxxxx) may come first */
     while (pos < end && (payload[pos] & 0xe0) == 0x20) {
@@ -112,4 +131,59 @@ int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags) {
         value = value * 10 + (c - '0');
     }
     return value;
+}
+
+int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags) {
+    size_t start;
+    size_t end;
+    if (!headers_fragment(payload, len, flags, &start, &end)) return 0;
+    return block_status(payload + start, end - start);
+}
+
+/* How much of a header block is kept to read its status from: the status
+ * comes first, after at most a few table size updates */
+#define STATUS_BLOCK_MAX 128
+
+int ml_h2_final_status(const uint8_t *frames, size_t len, uint32_t stream) {
+    uint8_t block[STATUS_BLOCK_MAX];
+    size_t block_len = 0;
+    bool in_block = false;  /* a HEADERS frame for `stream` has come, not yet its END_HEADERS */
+    size_t pos = 0;
+    while (len - pos >= 9) {
+        const size_t flen = ((size_t)frames[pos] << 16) | ((size_t)frames[pos + 1] << 8) |
+                            frames[pos + 2];
+        const uint8_t type = frames[pos + 3];
+        const uint8_t flags = frames[pos + 4];
+        const uint32_t sid = ((uint32_t)(frames[pos + 5] & 0x7f) << 24) |
+                             ((uint32_t)frames[pos + 6] << 16) | ((uint32_t)frames[pos + 7] << 8) |
+                             frames[pos + 8];
+        pos += 9;
+        if (flen > len - pos) return 0;  /* cut short */
+        const uint8_t *payload = frames + pos;
+        pos += flen;
+        size_t start = 0;
+        size_t end = flen;
+        if (in_block) {
+            /* Only its CONTINUATION frames may follow a HEADERS frame */
+            if (type != 0x09 || sid != stream) return 0;
+        } else if (type == 0x01 && sid == stream) {
+            if (!headers_fragment(payload, flen, flags, &start, &end)) return 0;
+            block_len = 0;
+            in_block = true;
+        } else {
+            continue;
+        }
+        const size_t take = end - start < STATUS_BLOCK_MAX - block_len
+                                ? end - start : STATUS_BLOCK_MAX - block_len;
+        if (take > 0) {
+            memcpy(block + block_len, payload + start, take);
+            block_len += take;
+        }
+        if (!(flags & 0x04)) continue;  /* no END_HEADERS: CONTINUATION follows */
+        in_block = false;
+        const int status = block_status(block, block_len);
+        if (status < 100 || status > 199) return status;
+        /* An interim response: the final one follows */
+    }
+    return 0;
 }

@@ -128,11 +128,86 @@ static void read_every_status(void) {
     CHECK(status_of(NULL, 0, 0) == 0, "empty");
     const uint8_t bad_pad[] = {0x05, 0x88};
     CHECK(status_of(bad_pad, sizeof bad_pad, 0x08) == 0, "padding past the end");
+    /* Huffman data after the three digits: more than 7 bits, or padding
+     * that is not all ones */
+    const uint8_t h401_more[] = {0x48, 0x83, 0x68, 0x01, 0xff};
+    CHECK(status_of(h401_more, sizeof h401_more, 0) == 0, "huffman, a byte after the digits");
+    const uint8_t h307_zero_pad[] = {0x48, 0x83, 0x64, 0x0e, 0xfe};
+    CHECK(status_of(h307_zero_pad, sizeof h307_zero_pad, 0) == 0, "huffman, padding not all ones");
+    const uint8_t h302_digit_more[] = {0x48, 0x83, 0x64, 0x02, 0x08};  /* then '1' */
+    CHECK(status_of(h302_digit_more, sizeof h302_digit_more, 0) == 0, "huffman, a fourth digit");
+}
+
+/* One HTTP/2 frame: its header, then the payload */
+static size_t frame(uint8_t *out, uint8_t type, uint8_t flags, uint32_t stream,
+                    const uint8_t *payload, size_t len) {
+    out[0] = (uint8_t)(len >> 16);
+    out[1] = (uint8_t)(len >> 8);
+    out[2] = (uint8_t)len;
+    out[3] = type;
+    out[4] = flags;
+    out[5] = (uint8_t)(stream >> 24);
+    out[6] = (uint8_t)(stream >> 16);
+    out[7] = (uint8_t)(stream >> 8);
+    out[8] = (uint8_t)stream;
+    if (len) memcpy(out + 9, payload, len);
+    return 9 + len;
+}
+
+enum { DATA = 0x0, HEADERS = 0x1, SETTINGS = 0x4, CONTINUATION = 0x9 };
+enum { END_STREAM = 0x1, END_HEADERS = 0x4, PADDED = 0x8 };
+
+static void read_every_final_status(void) {
+    uint8_t buf[256];
+    size_t n;
+    const uint8_t s200[] = {0x88};
+    const uint8_t s103[] = {0x08, 0x03, '1', '0', '3'};
+    const uint8_t s401[] = {0x08, 0x03, '4', '0', '1'};
+    const uint8_t body[] = {'{', '}'};
+    /* A plain response, after the server's SETTINGS */
+    n = frame(buf, SETTINGS, 0, 0, NULL, 0);
+    n += frame(buf + n, HEADERS, END_HEADERS, 1, s200, sizeof s200);
+    n += frame(buf + n, DATA, END_STREAM, 1, body, sizeof body);
+    CHECK(ml_h2_final_status(buf, n, 1) == 200, "plain");
+    CHECK(ml_h2_final_status(buf, n, 3) == 0, "another stream");
+    /* Split over CONTINUATION frames: :status cut in the middle */
+    n = frame(buf, HEADERS, 0, 1, s401, 2);
+    n += frame(buf + n, CONTINUATION, 0, 1, s401 + 2, 1);
+    n += frame(buf + n, CONTINUATION, END_HEADERS | END_STREAM, 1, s401 + 3, 2);
+    CHECK(ml_h2_final_status(buf, n, 1) == 401, "continuation");
+    /* A block not finished: no END_HEADERS yet */
+    CHECK(ml_h2_final_status(buf, n - 11, 1) == 0, "continuation still to come");
+    /* An empty, padded HEADERS fragment, all of it in the CONTINUATION */
+    const uint8_t pad_only[] = {0x02, 0x00, 0x00};
+    n = frame(buf, HEADERS, PADDED, 1, pad_only, sizeof pad_only);
+    n += frame(buf + n, CONTINUATION, END_HEADERS, 1, s401, sizeof s401);
+    CHECK(ml_h2_final_status(buf, n, 1) == 401, "padded empty fragment");
+    /* Another frame between a HEADERS frame and its CONTINUATION */
+    n = frame(buf, HEADERS, 0, 1, s401, 2);
+    n += frame(buf + n, DATA, 0, 1, body, sizeof body);
+    n += frame(buf + n, CONTINUATION, END_HEADERS, 1, s401 + 2, 3);
+    CHECK(ml_h2_final_status(buf, n, 1) == 0, "interleaved");
+    /* An interim response, then the final one */
+    n = frame(buf, HEADERS, END_HEADERS, 1, s103, sizeof s103);
+    n += frame(buf + n, HEADERS, END_HEADERS | END_STREAM, 1, s401, sizeof s401);
+    CHECK(ml_h2_final_status(buf, n, 1) == 401, "interim, then final");
+    /* An interim response alone is no answer */
+    n = frame(buf, HEADERS, END_HEADERS, 1, s103, sizeof s103);
+    CHECK(ml_h2_final_status(buf, n, 1) == 0, "interim alone");
+    /* Trailers after the final response do not replace its status */
+    n = frame(buf, HEADERS, END_HEADERS, 1, s200, sizeof s200);
+    n += frame(buf + n, HEADERS, END_HEADERS | END_STREAM, 1, s401, sizeof s401);
+    CHECK(ml_h2_final_status(buf, n, 1) == 200, "trailers");
+    /* A frame cut short */
+    n = frame(buf, HEADERS, END_HEADERS, 1, s401, sizeof s401);
+    CHECK(ml_h2_final_status(buf, n - 1, 1) == 0, "cut short");
+    CHECK(ml_h2_final_status(NULL, 0, 1) == 0, "nothing");
 }
 
 int main(void) {
     classify_every_reply();
     read_every_status();
+    read_every_final_status();
     if (failures) {
         printf("%d failed\n", failures);
         return 1;

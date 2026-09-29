@@ -991,8 +991,11 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
         }
         free(frame_buf);
 
-        /* Scan accumulated buffer for H2 END_STREAM on stream 1 */
+        /* Scan accumulated buffer for H2 END_STREAM on stream 1, with no
+         * header block of it still waiting for its CONTINUATION */
         int scan = 0;
+        bool ended = false;
+        bool headers_open = false;
         while (scan + 9 <= (int)h2_resp_len) {
             uint32_t fl = (h2_resp[scan] << 16) | (h2_resp[scan+1] << 8) | h2_resp[scan+2];
             uint8_t ft = h2_resp[scan+3];
@@ -1000,18 +1003,22 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
             uint32_t fs = ((h2_resp[scan+5] & 0x7F) << 24) | (h2_resp[scan+6] << 16) |
                           (h2_resp[scan+7] << 8) | h2_resp[scan+8];
             if (fl > 1000000 || scan + 9 + (int)fl > (int)h2_resp_len) break;
-            /* END_STREAM (0x01) on stream 1 in DATA(0x00) or HEADERS(0x01) frame */
-            if (fs == 1 && (ft == 0x00 || ft == 0x01) && (ff & 0x01)) {
-                got_register_end = true;
-                break;
+            if (fs == 1) {
+                /* HEADERS (0x01) or CONTINUATION (0x09) without END_HEADERS (0x04) */
+                if (ft == 0x01 || ft == 0x09) headers_open = !(ff & 0x04);
+                /* END_STREAM (0x01) in a DATA (0x00) or HEADERS frame */
+                if ((ft == 0x00 || ft == 0x01) && (ff & 0x01)) ended = true;
             }
             scan += 9 + fl;
         }
+        got_register_end = ended && !headers_open;
     }
 
+    /* The response's final :status: its header block may go on in
+     * CONTINUATION frames, and an interim (1xx) response come first */
+    const int status = ml_h2_final_status(h2_resp, h2_resp_len, 1);
+
     /* Parse H2 frames from accumulated buffer */
-    bool got_end_stream = false;
-    int status = 0;  /* the response's :status, once its HEADERS frame is read */
     int fpos = 0;
     while (fpos + 9 <= (int)h2_resp_len) {
         uint32_t f_len = (h2_resp[fpos] << 16) | (h2_resp[fpos + 1] << 8) | h2_resp[fpos + 2];
@@ -1037,12 +1044,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
                     memcpy(resp_buf + resp_total, h2_resp + fpos, f_len);
                     resp_total += f_len;
                 }
-                if (f_flags & 0x01) got_end_stream = true;
             }
-            if (f_type == 0x01 && status == 0) {
-                status = ml_h2_response_status(h2_resp + fpos, f_len, f_flags);
-            }
-            if (f_type == 0x01 && (f_flags & 0x01)) got_end_stream = true;
         }
 
         fpos += f_len;

@@ -46,7 +46,23 @@ microlink_registration_t ml_register_classify(const ml_register_reply_t *reply);
  *
  * A server sends :status first. Read: an indexed field of the static table
  * (200, 204, 206, 304, 400, 404, 500), or a literal whose name is :status,
- * its value plain or Huffman-coded digits — after any dynamic table size
- * updates.
+ * its value three plain digits or three Huffman-coded ones and at most 7 bits
+ * of padding — after any dynamic table size updates.
  */
 int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags);
+
+/**
+ * @brief The final :status of a stream's response, from the frames received
+ * @param frames HTTP/2 frames as received, each with its 9-byte header
+ * @param len Their length
+ * @param stream The stream the response is on
+ * @return The status, or 0 when none could be read
+ *
+ * A header block is a HEADERS frame and the CONTINUATION frames that follow
+ * it on the same stream up to END_HEADERS; its status is read as
+ * ml_h2_response_status reads one. An interim response (1xx) is skipped: the
+ * status is the first that is not 1xx. A block not finished within `frames`,
+ * a frame cut short, and any other frame between a HEADERS and its
+ * END_HEADERS give 0.
+ */
+int ml_h2_final_status(const uint8_t *frames, size_t len, uint32_t stream);
