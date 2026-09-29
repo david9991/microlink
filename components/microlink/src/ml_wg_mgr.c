@@ -438,8 +438,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     p->vpn_ip = update->vpn_ip;
     memcpy(p->public_key, update->public_key, 32);
     memcpy(p->disco_key, update->disco_key, 32);
-    strncpy(p->hostname, update->hostname, sizeof(p->hostname) - 1);
-    p->hostname[sizeof(p->hostname) - 1] = '\0';
+    ml_copy_name(p->hostname, sizeof(p->hostname), update->hostname);
     p->derp_region = update->derp_region;
     p->active = true;
 
@@ -579,7 +578,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
             .online = true,
             .direct_path = false,
         };
-        strncpy(info.hostname, p->hostname, sizeof(info.hostname) - 1);
+        ml_copy_name(info.hostname, sizeof(info.hostname), p->hostname);
         memcpy(info.public_key, p->public_key, 32);
         ml->peer_cb(ml, &info, ml->peer_cb_data);
     }

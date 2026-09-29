@@ -27,6 +27,7 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "esp_heap_caps.h"
+#include <string.h>
 
 #ifdef CONFIG_ML_ZERO_COPY_WG
 #include "lwip/udp.h"
@@ -707,6 +708,15 @@ static inline ssize_t ml_read_sock(int fd, void *buf, size_t len) {
  * every SYN retry, and nothing else can cut it short. */
 int ml_connect_stoppable(microlink_t *ml, int sock, const struct sockaddr *addr,
                          socklen_t addrlen, uint32_t timeout_ms);
+
+/* Copy the string `src` into `dst`, a field of `size` bytes: cut to size - 1
+ * bytes when longer — on purpose, for a name kept short — and always
+ * NUL-terminated. */
+static inline void ml_copy_name(char *dst, size_t size, const char *src) {
+    const size_t n = strnlen(src, size - 1);
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
 
 /* PSRAM allocation helper */
 static inline void *ml_psram_malloc(size_t size) {

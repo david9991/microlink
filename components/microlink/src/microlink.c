@@ -680,7 +680,7 @@ esp_err_t microlink_get_peer_info(const microlink_t *ml, int index, microlink_pe
     }
     const ml_peer_t *p = &ml->peers[index];
     info->vpn_ip = p->vpn_ip;
-    strncpy(info->hostname, p->hostname, sizeof(info->hostname) - 1);
+    ml_copy_name(info->hostname, sizeof(info->hostname), p->hostname);
     memcpy(info->public_key, p->public_key, 32);
     info->online = p->active;
     info->direct_path = p->has_direct_path;
