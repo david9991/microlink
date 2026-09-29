@@ -186,11 +186,13 @@ static err_t wg_derp_output_cb(const uint8_t *peer_public_key,
 }
 
 /* Called by wireguard-lwip when sending via external UDP socket (magicsock).
- * Uses raw lwIP udp_sendto() instead of BSD sendto() to avoid deadlock
- * when called from the TCPIP thread context (via tcpip_input → ip_input →
- * icmp/tcp reply → wireguardif_output → this callback). BSD sendto() posts
- * a message to the TCPIP thread and waits, which deadlocks if we're already
- * on that thread. */
+ * It runs where lwIP's output runs, under lwIP's core lock: on lwIP's thread
+ * (a TCP timer's segment, a reply to what the zero-copy path received), in
+ * the WG manager's task (a reply to what its locked wireguardif_network_rx
+ * handed ip_input: ip_input → icmp/tcp reply → wireguardif_output → this
+ * callback), and in any task's locked call into lwIP. So it sends with raw
+ * lwIP udp_sendto(), never BSD sendto(), which takes the core lock itself
+ * and would wait on its own caller. */
 static struct udp_pcb *s_wg_output_pcb = NULL;
 
 static err_t wg_udp_output_cb(uint32_t dest_ip, uint16_t dest_port,
@@ -325,13 +327,13 @@ static esp_err_t wg_init_interface(microlink_t *ml) {
     IP4_ADDR(&netif->netmask.u_addr.ip4, 255, 192, 0, 0);     /* /10 */
     IP4_ADDR(&netif->gw.u_addr.ip4, 0, 0, 0, 0);
 
-    /* netif->input for anything that hands the netif a packet through lwIP.
-     * WireGuard's receive path does not: it calls ip_input directly, so IP
+    /* netif->input: nothing in MicroLink calls it. WireGuard's receive path
+     * hands a decrypted packet to ip_input directly (wireguardif.c), so IP
      * and TCP input run inline in the task that called
-     * wireguardif_network_rx — lwIP's thread on the zero-copy path, the WG
-     * manager's otherwise, which therefore calls it under lwIP's core lock.
-     * The WG output callback uses raw udp_sendto (not BSD sendto) to avoid
-     * deadlock. */
+     * wireguardif_network_rx, under lwIP's core lock either way: lwIP's
+     * thread, which holds it, on the zero-copy path; the WG manager's task,
+     * which takes it, otherwise. The WG output callback sends with raw
+     * udp_sendto (not BSD sendto), which does not take the lock again. */
     netif->input = tcpip_input;
 
     /* Add to lwIP netif list (bypass netif_add which wants init callback) and
@@ -1297,9 +1299,10 @@ static void process_wg_packet(microlink_t *ml, const ml_rx_packet_t *pkt) {
         ip4_addr_set_u32(ip_2_ip4(&addr), htonl(pkt->src_ip));
     }
 
-    /* Call WG RX handler — pbuf is PBUF_RAM so lwIP may keep it. Under
-     * lwIP's core lock: it runs IP and TCP input inline (ip_input), and the
-     * zero-copy path runs it on lwIP's thread. */
+    /* Call WG RX handler — the pbuf is PBUF_RAM, so lwIP may keep it. Under
+     * lwIP's core lock: it decrypts with the WireGuard device, which lwIP's
+     * thread uses too (to send, and with CONFIG_ML_ZERO_COPY_WG to receive),
+     * and runs IP and TCP input inline (ip_input). */
     ML_LWIP_LOCKED(wireguardif_network_rx(device, NULL, p, &addr, pkt->src_port));
 }
 
