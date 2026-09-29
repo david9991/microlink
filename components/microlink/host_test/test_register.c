@@ -310,11 +310,14 @@ static void read_random_frames(void) {
               "random frames %d: malformed reads as nothing", round);
         CHECK(r_cut.data_len <= data_sum, "random frames %d: body %zu of %zu", round, r_cut.data_len,
               data_sum);
-        /* Flow control counts whole payloads: at least the body, at most every DATA */
+        /* Flow control counts whole payloads: at least the body, at most every
+         * DATA, and of the whole run exactly every DATA payload */
         CHECK(ml_h2_data_flow(copy, cut) >= r_cut.data_len &&
                   ml_h2_data_flow(copy, cut) <= ml_h2_data_flow(buf, n),
               "random frames %d: flow %zu, body %zu", round, ml_h2_data_flow(copy, cut),
               r_cut.data_len);
+        CHECK(ml_h2_data_flow(buf, n) == data_sum, "random frames %d: whole flow %zu, DATA %zu",
+              round, ml_h2_data_flow(buf, n), data_sum);
         if (complete) {
             completes++;
             CHECK(r_full.status == r_cut.status && r_full.data_len == r_cut.data_len &&
