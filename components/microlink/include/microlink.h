@@ -99,6 +99,18 @@ esp_err_t microlink_factory_reset(void);
 bool microlink_has_identity(void);
 
 /**
+ * @brief Whether this device holds a machine key from an earlier microlink_init
+ * @return true once keys were generated and kept, authorised or not
+ *
+ * A device enrolled before its authorisation was recorded has keys and no
+ * record (microlink_has_identity() is false); it registers on its node key,
+ * which the control server accepts without an auth key while the node is
+ * authorised and its key has not expired — and records the authorisation.
+ * Reads NVS only: callable with or without an instance, before microlink_init().
+ */
+bool microlink_has_machine_key(void);
+
+/**
  * @brief Initialize MicroLink
  * @param config Configuration (copied internally)
  * @return Handle on success, NULL on failure

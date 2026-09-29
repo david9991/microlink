@@ -140,6 +140,17 @@ void ml_identity_authorized(bool authorized) {
     nvs_close(nvs);
 }
 
+bool microlink_has_machine_key(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return false;
+    }
+    size_t key_len = 0;
+    const bool has = nvs_get_blob(nvs, NVS_KEY_MACHINE_PRI, NULL, &key_len) == ESP_OK && key_len == 32;
+    nvs_close(nvs);
+    return has;
+}
+
 bool microlink_has_identity(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
