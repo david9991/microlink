@@ -7,6 +7,27 @@
 
 #include <string.h>
 
+bool ml_name_from_fqdn(char *out, size_t size, const char *fqdn) {
+    if (size == 0) return false;
+    size_t len = fqdn ? strlen(fqdn) : 0;
+    if (len > 0 && fqdn[len - 1] == '.') len--;
+    const bool whole = len < size;
+    const size_t n = whole ? len : size - 1;
+    if (n > 0) memcpy(out, fqdn, n);
+    out[n] = '\0';
+    return whole;
+}
+
+bool ml_name_domain(char *out, size_t size, const char *fqdn) {
+    if (size == 0) return false;
+    const char *dot = fqdn ? strchr(fqdn, '.') : NULL;
+    if (!dot || !ml_name_from_fqdn(out, size, dot + 1) || out[0] == '\0') {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
 void ml_peers_forget(ml_peer_t *peers, int *count, int idx) {
     peers[idx].active = false;
     peers[idx].cached = false;
@@ -56,8 +77,9 @@ uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_dom
     const size_t name_len = strlen(name);
     for (int i = 0; i < count; i++) {
         const ml_peer_t *p = &peers[i];
-        /* A cached peer's name is cut: it could stand for another peer */
-        if (!p->active || p->cached || p->hostname[0] == '\0') continue;
+        /* A cached peer's name is cut, and so is one that did not fit: it
+         * could stand for another peer */
+        if (!p->active || p->cached || p->name_cut || p->hostname[0] == '\0') continue;
 
         /* 1. Exact match (case-insensitive) */
         if (same_name(p->hostname, name, sizeof(p->hostname))) {

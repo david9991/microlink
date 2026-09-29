@@ -236,6 +236,7 @@ typedef struct {
     uint8_t public_key[32];
     uint8_t disco_key[32];
     char hostname[64];
+    bool name_cut;               /* hostname did not fit whole: it is cut */
     uint16_t derp_region;
     /* Endpoints */
     struct {

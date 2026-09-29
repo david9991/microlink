@@ -106,6 +106,19 @@ static int coord_send(microlink_t *ml, const uint8_t *data, size_t len) {
     return 0;
 }
 
+/* The board's own tailnet domain, from its node's Name
+ * ("host.tail1234.ts.net."): ml_name_domain's. Kept only when it fits
+ * whole, and written only when it changes. */
+static void note_own_domain(microlink_t *ml, const cJSON *node) {
+    const cJSON *name = cJSON_GetObjectItem(node, "Name");
+    char domain[sizeof(ml->own_domain)];
+    if (!cJSON_IsString(name) || !ml_name_domain(domain, sizeof(domain), name->valuestring)) {
+        return;
+    }
+    if (strcmp(domain, ml->own_domain) == 0) return;
+    memcpy(ml->own_domain, domain, sizeof(domain));
+}
+
 /* Set a socket's receive timeout; 0 ms would mean none, so at least 1 */
 static void sock_rcvtimeo(int sock, uint32_t ms) {
     if (ms == 0) ms = 1;
@@ -130,22 +143,6 @@ static void coord_rcvtimeo(microlink_t *ml, uint32_t ms) {
  * finished by then, or at a stop, fails with ETIMEDOUT or ECANCELED — its
  * stream is lost, and the caller must not read on. A closed connection fails
  * with ECONNRESET. */
-/* The board's own tailnet domain, from its node's Name
- * ("host.tail1234.ts.net."): what follows the first label, the trailing dot
- * taken off. Kept only when it fits whole, and written only when it changes. */
-static void note_own_domain(microlink_t *ml, const cJSON *node) {
-    const cJSON *name = cJSON_GetObjectItem(node, "Name");
-    if (!cJSON_IsString(name)) return;
-    const char *dot = strchr(name->valuestring, '.');
-    if (!dot) return;
-    size_t len = strlen(dot + 1);
-    if (len > 0 && dot[len] == '.') len--;
-    if (len == 0 || len >= sizeof(ml->own_domain)) return;
-    if (strncmp(ml->own_domain, dot + 1, len) == 0 && ml->own_domain[len] == '\0') return;
-    memcpy(ml->own_domain, dot + 1, len);
-    ml->own_domain[len] = '\0';
-}
-
 static int coord_recv_by(microlink_t *ml, uint8_t *buf, size_t len, uint64_t *deadline) {
     size_t recvd = 0;
     bool clamped = false;
@@ -1274,13 +1271,11 @@ static void parse_peers_from_map_response(microlink_t *ml, cJSON *root) {
 
         /* Hostname */
         cJSON *name = cJSON_GetObjectItem(peer, "Name");
-        if (name && name->valuestring) {
-            strncpy(update->hostname, name->valuestring, sizeof(update->hostname) - 1);
-            /* Strip trailing dot from FQDN */
-            size_t hlen = strlen(update->hostname);
-            if (hlen > 0 && update->hostname[hlen - 1] == '.') {
-                update->hostname[hlen - 1] = '\0';
-            }
+        if (cJSON_IsString(name)) {
+            /* The FQDN, its trailing dot off; one that does not fit is kept
+             * cut, and never answers for a name */
+            update->name_cut = !ml_name_from_fqdn(update->hostname, sizeof(update->hostname),
+                                                  name->valuestring);
         }
 
         /* NodeKey: "nodekey:HEX..." */

@@ -511,7 +511,8 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     ml_copy_name(p->hostname, sizeof(p->hostname), update->hostname);
     p->derp_region = update->derp_region;
     p->active = true;
-    p->cached = false;  /* the map's name, whole */
+    p->cached = false;  /* the map's name */
+    p->name_cut = update->name_cut;
     p->in_map = true;
 
     /* Copy endpoints */

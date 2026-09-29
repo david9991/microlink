@@ -178,9 +178,46 @@ static void names(void) {
     own = NULL;
     CHECK(resolve("control-host") == 0, "no own domain");
     own = "tail1.ts.net";
+
+    /* A name that did not fit whole answers for nothing, not even for
+     * what was kept of it */
+    reset();
+    peer(0, "a-rather-long-host-name-that-was-cut.tail1.ts.net", 0x64400009, false);
+    peers[0].name_cut = true;
+    CHECK(resolve("a-rather-long-host-name-that-was-cut.tail1.ts.net") == 0, "cut: full name");
+    CHECK(resolve("a-rather-long-host-name-that-was-cut") == 0, "cut: first label");
+}
+
+static void fqdns(void) {
+    char out[16];
+    CHECK(ml_name_from_fqdn(out, sizeof out, "a.tail1.ts.net.") && strcmp(out, "a.tail1.ts.net") == 0,
+          "trailing dot off: %s", out);
+    CHECK(ml_name_from_fqdn(out, sizeof out, "a.tail1.ts.net") && strcmp(out, "a.tail1.ts.net") == 0,
+          "no trailing dot: %s", out);
+    /* 15 characters fit a 16-byte buffer, the dot not counted */
+    CHECK(ml_name_from_fqdn(out, sizeof out, "abcdefghijklmno.") && strcmp(out, "abcdefghijklmno") == 0,
+          "exactly full: %s", out);
+    CHECK(!ml_name_from_fqdn(out, sizeof out, "abcdefghijklmnop.") && strcmp(out, "abcdefghijklmno") == 0,
+          "one too long: cut, and said so: %s", out);
+    CHECK(ml_name_from_fqdn(out, sizeof out, "") && out[0] == '\0', "empty");
+    CHECK(ml_name_from_fqdn(out, sizeof out, ".") && out[0] == '\0', "a lone dot");
+    CHECK(ml_name_from_fqdn(out, sizeof out, NULL) && out[0] == '\0', "none");
+    CHECK(!ml_name_from_fqdn(out, 0, "a"), "no room at all");
+
+    CHECK(ml_name_domain(out, sizeof out, "host.tail1.ts.net.") && strcmp(out, "tail1.ts.net") == 0,
+          "domain: %s", out);
+    CHECK(ml_name_domain(out, sizeof out, "host.tail1.ts.net") && strcmp(out, "tail1.ts.net") == 0,
+          "domain, no trailing dot: %s", out);
+    CHECK(!ml_name_domain(out, sizeof out, "host") && out[0] == '\0', "no dot: no domain");
+    CHECK(!ml_name_domain(out, sizeof out, "host.") && out[0] == '\0', "only the trailing dot");
+    CHECK(!ml_name_domain(out, sizeof out, "host..") && out[0] == '\0', "an empty domain");
+    CHECK(!ml_name_domain(out, sizeof out, "h.a-very-long-tailnet.ts.net") && out[0] == '\0',
+          "a domain that does not fit is none, not a cut one");
+    CHECK(!ml_name_domain(out, sizeof out, NULL) && out[0] == '\0', "none");
 }
 
 int main(void) {
+    fqdns();
     full_maps();
     names();
     if (failures) {

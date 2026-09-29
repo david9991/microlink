@@ -31,6 +31,8 @@ typedef struct {
     bool cached;
     /* In the full map being applied */
     bool in_map;
+    /* Its name from the map did not fit whole: cut, never a MagicDNS answer */
+    bool name_cut;
 
     /* Endpoints */
     struct {
@@ -59,6 +61,24 @@ typedef struct {
     /* On-demand handshake: tried once on first DISCO direct path discovery */
     bool tried_initial_handshake;
 } ml_peer_t;
+
+/**
+ * @brief A node's MagicDNS name ("host.tail1234.ts.net."), its trailing dot
+ *        taken off, into `out`
+ * @param out Where it goes, NUL-terminated
+ * @param size Its size
+ * @param fqdn The name as the map gives it (may be NULL: an empty name)
+ * @return true when it fits whole; false when `out` holds only as much of it
+ *         as fits — a cut name, which must answer for nothing
+ */
+bool ml_name_from_fqdn(char *out, size_t size, const char *fqdn);
+
+/**
+ * @brief The domain of a node's MagicDNS name: what follows its first label,
+ *        the trailing dot taken off ("tail1234.ts.net")
+ * @return true when there is one and it fits whole; else `out` is empty
+ */
+bool ml_name_domain(char *out, size_t size, const char *fqdn);
 
 /**
  * @brief Forget the peer at `idx`: no longer active nor cached, and the
@@ -111,7 +131,8 @@ bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete,
  * first label ("host") only when the rest of its name is `own_domain`, so a
  * node shared in from another tailnet is found by its full name alone, and
  * while the board's own domain is not known no first label resolves. A
- * cached peer never resolves: its name is cut, and could stand for another.
+ * cached peer, and one whose name did not fit whole, never resolves: its
+ * name is cut, and could stand for another.
  */
 uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_domain,
                           const char *name);
