@@ -35,7 +35,6 @@
 static const char *TAG = "ml_derp";
 
 /* Timeout for DERP connection handshake operations */
-#define DERP_CONNECT_TIMEOUT_MS  10000
 
 /* ============================================================================
  * Custom BIO callbacks for non-blocking TLS I/O
@@ -58,7 +57,7 @@ static int ml_derp_bio_recv_timeout(void *ctx, unsigned char *buf, size_t len,
     /* Set SO_RCVTIMEO to the requested timeout.
      * If timeout is 0 (mbedTLS default = "no timeout"), use 10s as a sane
      * default to avoid indefinite blocking on AT sockets. */
-    uint32_t effective_timeout = (timeout > 0) ? timeout : DERP_CONNECT_TIMEOUT_MS;
+    uint32_t effective_timeout = (timeout > 0) ? timeout : ML_CONNECT_TIMEOUT_MS;
     struct timeval tv;
     tv.tv_sec = effective_timeout / 1000;
     tv.tv_usec = (effective_timeout % 1000) * 1000;
@@ -714,11 +713,12 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     }
 
     /* Set connect timeout */
-    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+    struct timeval tv = { .tv_sec = ML_CONNECT_TIMEOUT_MS / 1000,
+                          .tv_usec = (ML_CONNECT_TIMEOUT_MS % 1000) * 1000 };
     ml_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     ml_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (ml_connect_stoppable(ml, sock, res->ai_addr, res->ai_addrlen, 10000) < 0) {
+    if (ml_connect_stoppable(ml, sock, res->ai_addr, res->ai_addrlen, ML_CONNECT_TIMEOUT_MS) < 0) {
         ESP_LOGE(TAG, "TCP connect failed: %d", errno);
         ml_close_sock(sock);
         ml_freeaddrinfo(res);
@@ -750,7 +750,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     }
     mbedtls_ssl_conf_authmode(&ml->derp.ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&ml->derp.ssl_conf, mbedtls_ctr_drbg_random, &ml->derp.ctr_drbg);
-    mbedtls_ssl_conf_read_timeout(&ml->derp.ssl_conf, DERP_CONNECT_TIMEOUT_MS);
+    mbedtls_ssl_conf_read_timeout(&ml->derp.ssl_conf, ML_CONNECT_TIMEOUT_MS);
 
     if (mbedtls_ssl_setup(&ml->derp.ssl, &ml->derp.ssl_conf) != 0 ||
         mbedtls_ssl_set_hostname(&ml->derp.ssl, derp_host) != 0) {
@@ -808,7 +808,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         uint64_t http_start = ml_get_time_ms();
 
         while (resp_len < (int)sizeof(resp_buf) - 1) {
-            if (ml_get_time_ms() - http_start > DERP_CONNECT_TIMEOUT_MS) {
+            if (ml_get_time_ms() - http_start > ML_CONNECT_TIMEOUT_MS) {
                 ESP_LOGE(TAG, "HTTP upgrade response timeout");
                 derp_release(ml);
                 return ESP_FAIL;
@@ -872,7 +872,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     /* Step 1: Read ServerKey frame header using reliable read helper */
     uint8_t frame_type;
     uint32_t frame_len;
-    esp_err_t err = derp_recv_frame_header(ml, &frame_type, &frame_len, DERP_CONNECT_TIMEOUT_MS);
+    esp_err_t err = derp_recv_frame_header(ml, &frame_type, &frame_len, ML_CONNECT_TIMEOUT_MS);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read ServerKey frame header (err=%d)", err);
         derp_release(ml);
@@ -889,7 +889,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     /* Read and verify 8-byte magic */
     uint8_t magic[8];
     static const uint8_t DERP_MAGIC[8] = {0x44, 0x45, 0x52, 0x50, 0xf0, 0x9f, 0x94, 0x91};
-    if (derp_tls_read_all(ml, magic, 8, DERP_CONNECT_TIMEOUT_MS) < 0) {
+    if (derp_tls_read_all(ml, magic, 8, ML_CONNECT_TIMEOUT_MS) < 0) {
         ESP_LOGE(TAG, "Failed to read ServerKey magic");
         derp_release(ml);
         return ESP_FAIL;
@@ -906,7 +906,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
 
     /* Read 32-byte server public key */
     uint8_t derp_server_key[32];
-    if (derp_tls_read_all(ml, derp_server_key, 32, DERP_CONNECT_TIMEOUT_MS) < 0) {
+    if (derp_tls_read_all(ml, derp_server_key, 32, ML_CONNECT_TIMEOUT_MS) < 0) {
         ESP_LOGE(TAG, "Failed to read server key");
         derp_release(ml);
         return ESP_FAIL;
@@ -922,7 +922,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         size_t remaining = frame_len - 40;
         while (remaining > 0) {
             size_t chunk = remaining > sizeof(skip_buf) ? sizeof(skip_buf) : remaining;
-            if (derp_tls_read_all(ml, skip_buf, chunk, DERP_CONNECT_TIMEOUT_MS) < 0) break;
+            if (derp_tls_read_all(ml, skip_buf, chunk, ML_CONNECT_TIMEOUT_MS) < 0) break;
             remaining -= chunk;
         }
     }
@@ -993,12 +993,12 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     {
         uint8_t si_type;
         uint32_t si_len;
-        err = derp_recv_frame_header(ml, &si_type, &si_len, DERP_CONNECT_TIMEOUT_MS);
+        err = derp_recv_frame_header(ml, &si_type, &si_len, ML_CONNECT_TIMEOUT_MS);
         if (err == ESP_OK && si_type == DERP_FRAME_SERVER_INFO && si_len > 0) {
             /* Read and discard ServerInfo payload */
             uint8_t *si_buf = malloc(si_len);
             if (si_buf) {
-                derp_tls_read_all(ml, si_buf, si_len, DERP_CONNECT_TIMEOUT_MS);
+                derp_tls_read_all(ml, si_buf, si_len, ML_CONNECT_TIMEOUT_MS);
                 free(si_buf);
             }
             ESP_LOGI(TAG, "ServerInfo received (discarded)");

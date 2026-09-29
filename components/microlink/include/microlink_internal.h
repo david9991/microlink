@@ -105,6 +105,10 @@ extern "C" {
 #define ML_STUN_TOTAL_TIMEOUT_MS        5000
 #define ML_STUN_RESTUN_INTERVAL_MS      23000
 
+/* How long a TCP connect to the control plane or a DERP server may take, and
+ * the send and receive timeout of its socket */
+#define ML_CONNECT_TIMEOUT_MS           10000
+
 /* Control plane timing */
 #define ML_CTRL_WATCHDOG_MS             120000
 #define ML_CTRL_BACKOFF_MAX_MS          30000

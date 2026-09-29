@@ -246,7 +246,8 @@ static int do_tcp_connect(microlink_t *ml) {
     }
 
     /* Socket timeouts */
-    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+    struct timeval tv = { .tv_sec = ML_CONNECT_TIMEOUT_MS / 1000,
+                          .tv_usec = (ML_CONNECT_TIMEOUT_MS % 1000) * 1000 };
     ml_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     ml_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
@@ -262,7 +263,7 @@ static int do_tcp_connect(microlink_t *ml) {
 
     ESP_LOGI(TAG, "Connecting to %s:80...", CTRL_HOST(ml));
 
-    if (ml_connect_stoppable(ml, sock, res->ai_addr, res->ai_addrlen, 10000) < 0) {
+    if (ml_connect_stoppable(ml, sock, res->ai_addr, res->ai_addrlen, ML_CONNECT_TIMEOUT_MS) < 0) {
         ESP_LOGE(TAG, "TCP connect failed: %d", errno);
         ml_close_sock(sock);
         ml_freeaddrinfo(res);
