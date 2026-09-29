@@ -449,6 +449,10 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         return -1;  /* Silently skip — peer not in allowlist */
     }
 
+    /* From the slot's choice to its new name and address, under the peer
+     * table's lock: a reader sees the old peer or the new one, never a mix */
+    ml_peers_lock(ml);
+
     /* Check if peer already exists */
     int idx = find_peer_by_key(ml, update->public_key);
     if (idx >= 0) {
@@ -495,6 +499,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         }
 
         if (idx < 0) {
+            ml_peers_unlock(ml);
             ESP_LOGW(TAG, "Peer table full (%d slots), cannot add %s",
                      ML_MAX_PEERS, update->hostname);
             return -1;
@@ -514,6 +519,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     p->cached = false;  /* the map's name */
     p->name_cut = update->name_cut;
     p->in_map = true;
+    ml_peers_unlock(ml);
 
     /* Copy endpoints */
     p->endpoint_count = update->endpoint_count;
@@ -678,7 +684,9 @@ static void unlink_peer(void *ctx, int idx) {
 
 static void remove_peer_at(microlink_t *ml, int idx) {
     unlink_peer(ml, idx);
+    ml_peers_lock(ml);
     ml_peers_forget(ml->peers, &ml->peer_count, idx);
+    ml_peers_unlock(ml);
 }
 
 static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
@@ -689,7 +697,9 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
 /* A full map's end: drop what it did not contain — peers of earlier maps,
  * and cached peers — when the whole list was queued; the map is applied. */
 static void full_map_applied(microlink_t *ml, bool complete) {
+    ml_peers_lock(ml);
     ml->map_applied = ml_peers_map_end(ml->peers, &ml->peer_count, complete, unlink_peer, ml);
+    ml_peers_unlock(ml);
 }
 
 static void process_peer_updates(microlink_t *ml) {
@@ -1610,9 +1620,13 @@ void ml_wg_mgr_task(void *arg) {
     memset(pending_probes, 0, sizeof(pending_probes));
 
     /* Load cached peers from NVS for fast boot */
+    ml_peers_lock(ml);
     int cached = ml_peer_nvs_load_all(ml->peers, ML_MAX_PEERS);
     if (cached > 0) {
         ml->peer_count = cached;
+    }
+    ml_peers_unlock(ml);
+    if (cached > 0) {
         ESP_LOGI(TAG, "Pre-loaded %d cached peers from NVS", cached);
     }
 

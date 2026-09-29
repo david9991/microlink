@@ -391,6 +391,14 @@ struct microlink_s {
     /* Peers (owned exclusively by wg_mgr task) */
     ml_peer_t peers[ML_MAX_PEERS];
     int peer_count;
+    /* Guards what another task reads of the peer table — a slot's address,
+     * name, active and cached flags, peer_count — and own_domain: their
+     * writers (the WG manager, coord for own_domain) change them under it,
+     * and the readers (microlink_resolve, microlink_get_peer_info) read
+     * under it, so a name never meets another node's address. The WG
+     * manager reads its own table without it. Taken before lwIP's core
+     * lock, never after. */
+    SemaphoreHandle_t peers_lock;
 
     /* STUN results (written by coord, read by coord only) */
     uint32_t stun_public_ip;
@@ -509,6 +517,15 @@ static inline void ml_lwip_unlock(bool taken) {
         __VA_ARGS__;                               \
         ml_lwip_unlock(ml_lwip_taken_);            \
     } while (0)
+
+/* Hold and release the peer table's lock (microlink_t.peers_lock) */
+static inline void ml_peers_lock(const microlink_t *ml) {
+    xSemaphoreTake(ml->peers_lock, portMAX_DELAY);
+}
+
+static inline void ml_peers_unlock(const microlink_t *ml) {
+    xSemaphoreGive(ml->peers_lock);
+}
 
 /* The end of every task: tell stop this one is gone, then delete it. Nothing
  * of `ml` is touched after the give — stop may free it at once. */

@@ -116,7 +116,9 @@ static void note_own_domain(microlink_t *ml, const cJSON *node) {
         return;
     }
     if (strcmp(domain, ml->own_domain) == 0) return;
+    ml_peers_lock(ml);
     memcpy(ml->own_domain, domain, sizeof(domain));
+    ml_peers_unlock(ml);
 }
 
 /* Set a socket's receive timeout; 0 ms would mean none, so at least 1 */

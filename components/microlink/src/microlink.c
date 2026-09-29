@@ -237,6 +237,7 @@ static void instance_free(microlink_t *ml) {
     if (ml->events) vEventGroupDelete(ml->events);
     if (ml->task_exited) vSemaphoreDelete(ml->task_exited);
     if (ml->auth_lock) vSemaphoreDelete(ml->auth_lock);
+    if (ml->peers_lock) vSemaphoreDelete(ml->peers_lock);
     mbedtls_platform_zeroize(ml, sizeof(*ml));
     free(ml);
 }
@@ -388,6 +389,14 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     ml->auth_lock = xSemaphoreCreateMutex();
     if (!ml->auth_lock) {
         ESP_LOGE(TAG, "Failed to create auth key lock");
+        instance_free(ml);
+        return NULL;
+    }
+
+    /* Guards the peer table between the WG manager and its readers */
+    ml->peers_lock = xSemaphoreCreateMutex();
+    if (!ml->peers_lock) {
+        ESP_LOGE(TAG, "Failed to create peer table lock");
         instance_free(ml);
         return NULL;
     }
@@ -721,7 +730,13 @@ int microlink_get_peer_count(const microlink_t *ml) {
 }
 
 esp_err_t microlink_get_peer_info(const microlink_t *ml, int index, microlink_peer_info_t *info) {
-    if (!ml || !info || index < 0 || index >= ml->peer_count) {
+    if (!ml || !info || index < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* The slot as one: its address with its own name */
+    ml_peers_lock(ml);
+    if (index >= ml->peer_count) {
+        ml_peers_unlock(ml);
         return ESP_ERR_INVALID_ARG;
     }
     const ml_peer_t *p = &ml->peers[index];
@@ -730,6 +745,7 @@ esp_err_t microlink_get_peer_info(const microlink_t *ml, int index, microlink_pe
     memcpy(info->public_key, p->public_key, 32);
     info->online = p->active;
     info->direct_path = p->has_direct_path;
+    ml_peers_unlock(ml);
     return ESP_OK;
 }
 
@@ -890,5 +906,8 @@ uint64_t ml_get_time_ms(void) {
 
 uint32_t microlink_resolve(const microlink_t *ml, const char *hostname) {
     if (!ml) return 0;
-    return ml_peers_resolve(ml->peers, ml->peer_count, ml->own_domain, hostname);
+    ml_peers_lock(ml);
+    const uint32_t ip = ml_peers_resolve(ml->peers, ml->peer_count, ml->own_domain, hostname);
+    ml_peers_unlock(ml);
+    return ip;
 }
