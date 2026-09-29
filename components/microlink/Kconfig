@@ -64,7 +64,8 @@ menu "MicroLink V2 Configuration"
             HostName, which may be an IP address; HostName is the SNI,
             unless it is an IP address: then no SNI is sent. A node's IPv4,
             when given, is dialled in place of its HostName, and "none"
-            dials IPv6 only. A node whose CertName pins
+            dials IPv6 only; a node with IPv6 "none" and IPv4 unset dials
+            HostName's IPv4 only. A node whose CertName pins
             a self-signed certificate by its hash ("sha256-raw:") is not
             used. Tailscale's relays are publicly trusted. Turn this off only for
             a relay whose certificate no public authority signed; the
