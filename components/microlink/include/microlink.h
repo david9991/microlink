@@ -131,6 +131,19 @@ bool microlink_has_machine_key(void);
 microlink_t *microlink_init(const microlink_config_t *config);
 
 /**
+ * @brief Replace the auth key the instance registers with
+ * @param ml Handle
+ * @param auth_key The new key (copied), or NULL or "" for none: the next
+ *        registration goes on the node key alone
+ * @return ESP_OK, or ESP_ERR_INVALID_SIZE for a key too long (nothing changed)
+ *
+ * The instance keeps its own copy of the key from microlink_init() on; this
+ * wipes it and copies the new one, under the lock a registration holds while
+ * it reads the key. The caller's copy is the caller's to wipe.
+ */
+esp_err_t microlink_set_auth_key(microlink_t *ml, const char *auth_key);
+
+/**
  * @brief Start connecting to Tailscale
  * @param ml Handle from microlink_init()
  * @return ESP_OK on success

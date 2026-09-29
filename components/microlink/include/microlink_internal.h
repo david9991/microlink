@@ -113,6 +113,9 @@ extern "C" {
  * arriving, past the socket's own timeout for the read under way */
 #define ML_PARTIAL_READ_MS              3000
 
+/* The longest auth key an instance keeps, its NUL included */
+#define ML_AUTH_KEY_MAX                 256
+
 /* Control plane timing */
 #define ML_CTRL_WATCHDOG_MS             120000
 #define ML_CTRL_BACKOFF_MAX_MS          30000
@@ -384,6 +387,11 @@ struct microlink_s {
     /* microlink_stop has run: the instance is not started again */
     bool stopped;
 
+    /* The auth key the instance registers with, its own copy ("" for none),
+     * read and replaced only under auth_lock */
+    char auth_key[ML_AUTH_KEY_MAX];
+    SemaphoreHandle_t auth_lock;
+
     /* Queues */
     QueueHandle_t derp_tx_queue;        /* -> derp_tx task */
     QueueHandle_t disco_rx_queue;       /* net_io -> wg_mgr */
@@ -471,7 +479,6 @@ struct microlink_s {
 
     /* NVS-backed config string storage (auth_key/device_name pointers in
      * microlink_config_t are redirected here when NVS settings exist) */
-    char nvs_auth_key[96];
     char nvs_device_name[48];
 
     /* Control plane host override (empty = use ML_CTRL_HOST default).

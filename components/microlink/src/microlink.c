@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "cJSON.h"
+#include "mbedtls/platform_util.h"
 #include <string.h>
 #include <stdio.h>
 #include <fcntl.h>
@@ -219,6 +220,10 @@ microlink_t *microlink_init(const microlink_config_t *config) {
         ESP_LOGE(TAG, "Invalid config: auth_key required");
         return NULL;
     }
+    if (strlen(config->auth_key) >= ML_AUTH_KEY_MAX) {
+        ESP_LOGE(TAG, "Invalid config: auth_key longer than %d bytes", ML_AUTH_KEY_MAX - 1);
+        return NULL;
+    }
 
     /* Route cJSON to PSRAM */
     cJSON_Hooks hooks = {
@@ -234,8 +239,11 @@ microlink_t *microlink_init(const microlink_config_t *config) {
         return NULL;
     }
 
-    /* Copy config */
+    /* Copy config — the auth key into the instance's own copy, the one it
+     * reads from now on (microlink_set_auth_key replaces it) */
     ml->config = *config;
+    strcpy(ml->auth_key, config->auth_key);
+    ml->config.auth_key = NULL;
     if (ml->config.max_peers == 0) ml->config.max_peers = ML_MAX_PEERS;
     if (ml->config.max_peers > ML_MAX_PEERS) ml->config.max_peers = ML_MAX_PEERS;
     ml->config.enable_derp = true;  /* Always need DERP for relay */
@@ -279,8 +287,8 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     if (ml->config_httpd) {
         const char *nvs_auth = ml_config_get_auth_key(ml->config_httpd);
         if (nvs_auth) {
-            strncpy(ml->nvs_auth_key, nvs_auth, sizeof(ml->nvs_auth_key) - 1);
-            ml->config.auth_key = ml->nvs_auth_key;
+            mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
+            ml_copy_name(ml->auth_key, sizeof(ml->auth_key), nvs_auth);
             ESP_LOGI(TAG, "Auth key overridden from NVS (len=%d)", (int)strlen(nvs_auth));
         }
         /* Device name: full name takes priority, then prefix+MAC, then Kconfig */
@@ -346,6 +354,18 @@ microlink_t *microlink_init(const microlink_config_t *config) {
     if (!ml->task_exited) {
         ESP_LOGE(TAG, "Failed to create task exit semaphore");
         vEventGroupDelete(ml->events);
+        mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
+        free(ml);
+        return NULL;
+    }
+
+    /* Guards the auth key between a registration and microlink_set_auth_key */
+    ml->auth_lock = xSemaphoreCreateMutex();
+    if (!ml->auth_lock) {
+        ESP_LOGE(TAG, "Failed to create auth key lock");
+        vSemaphoreDelete(ml->task_exited);
+        vEventGroupDelete(ml->events);
+        mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
         free(ml);
         return NULL;
     }
@@ -664,6 +684,8 @@ void microlink_destroy(microlink_t *ml) {
     /* Delete event group */
     if (ml->events) vEventGroupDelete(ml->events);
     if (ml->task_exited) vSemaphoreDelete(ml->task_exited);
+    if (ml->auth_lock) vSemaphoreDelete(ml->auth_lock);
+    mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
 
     /* Clear keys from memory */
     memset(ml->machine_private_key, 0, 32);
@@ -844,6 +866,17 @@ int ml_connect_stoppable(microlink_t *ml, int sock, const struct sockaddr *addr,
     errno = saved;
     return ret;
 #endif
+}
+
+esp_err_t microlink_set_auth_key(microlink_t *ml, const char *auth_key) {
+    if (!ml) return ESP_ERR_INVALID_ARG;
+    const size_t len = auth_key ? strlen(auth_key) : 0;
+    if (len >= sizeof(ml->auth_key)) return ESP_ERR_INVALID_SIZE;
+    xSemaphoreTake(ml->auth_lock, portMAX_DELAY);
+    mbedtls_platform_zeroize(ml->auth_key, sizeof(ml->auth_key));
+    if (len > 0) memcpy(ml->auth_key, auth_key, len);
+    xSemaphoreGive(ml->auth_lock);
+    return ESP_OK;
 }
 
 bool microlink_map_applied(const microlink_t *ml) {

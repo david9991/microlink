@@ -783,15 +783,17 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     snprintf(key_str, sizeof(key_str), "nodekey:%s", key_hex);
     cJSON_AddStringToObject(root, "NodeKey", key_str);
 
-    /* Auth - only include if auth_key is valid (matching v1 behavior). Every
-     * copy of the key made here is wiped before it is freed. */
-    cJSON *auth_key = NULL;
-    if (ml->config.auth_key && strlen(ml->config.auth_key) > 0) {
+    /* Auth - only include if there is a key. The key stays locked until the
+     * request is printed: its node refers to the instance's own copy rather
+     * than copying it, so only the printed request and its frame hold it, and
+     * both are wiped before they are freed. */
+    xSemaphoreTake(ml->auth_lock, portMAX_DELAY);
+    const bool sent_key = ml->auth_key[0] != '\0';
+    if (sent_key) {
         cJSON *auth = cJSON_CreateObject();
-        auth_key = cJSON_AddStringToObject(auth, "AuthKey", ml->config.auth_key);
+        cJSON_AddItemToObject(auth, "AuthKey", cJSON_CreateStringReference(ml->auth_key));
         cJSON_AddItemToObject(root, "Auth", auth);
     }
-    const bool sent_key = auth_key != NULL;
 
     /* Hostinfo */
     cJSON *hostinfo = hostinfo_new(ml);
@@ -838,12 +840,15 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     char *json_str = ml_psram_malloc(REGISTER_JSON_MAX);
     const bool printed = json_str &&
                          cJSON_PrintPreallocated(root, json_str, REGISTER_JSON_MAX, false);
-    if (auth_key && auth_key->valuestring) {
-        mbedtls_platform_zeroize(auth_key->valuestring, strlen(auth_key->valuestring));
-    }
     cJSON_Delete(root);
+    xSemaphoreGive(ml->auth_lock);
+    if (!json_str) {
+        ESP_LOGE(TAG, "No memory for the RegisterRequest");
+        return -1;
+    }
     if (!printed) {
-        ESP_LOGE(TAG, "RegisterRequest does not fit %d bytes", REGISTER_JSON_MAX);
+        ESP_LOGE(TAG, "RegisterRequest does not fit %d bytes, or a node of it was not made",
+                 REGISTER_JSON_MAX);
         free_wiped(json_str, REGISTER_JSON_MAX);
         return -1;
     }
@@ -2623,7 +2628,10 @@ void ml_coord_task(void *arg) {
                     if (now - last_expiry_check_ms > 60000) {
                         last_expiry_check_ms = now;
                         if (ml->key_expired) {
-                            if (ml->config.auth_key) {
+                            xSemaphoreTake(ml->auth_lock, portMAX_DELAY);
+                            const bool has_key = ml->auth_key[0] != '\0';
+                            xSemaphoreGive(ml->auth_lock);
+                            if (has_key) {
                                 ESP_LOGW(TAG, "Key expired, re-registering with auth_key...");
                                 state = COORD_RECONNECTING;
                                 break;
