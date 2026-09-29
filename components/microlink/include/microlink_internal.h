@@ -113,9 +113,6 @@ extern "C" {
  * arriving, counted from its first byte: every read of it waits no longer */
 #define ML_PARTIAL_READ_MS              3000
 
-/* The longest auth key an instance keeps, its NUL included */
-#define ML_AUTH_KEY_MAX                 256
-
 /* Control plane timing */
 #define ML_CTRL_WATCHDOG_MS             120000
 #define ML_CTRL_BACKOFF_MAX_MS          30000

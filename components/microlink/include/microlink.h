@@ -23,9 +23,13 @@ extern "C" {
 /* Opaque handle */
 typedef struct microlink_s microlink_t;
 
+/* The longest auth key an instance keeps, its NUL included: microlink_init
+ * and microlink_set_auth_key refuse a longer one */
+#define ML_AUTH_KEY_MAX 256
+
 /* Configuration */
 typedef struct {
-    const char *auth_key;       /* Tailscale auth key (tskey-auth-...) */
+    const char *auth_key;       /* Tailscale auth key (tskey-auth-...), shorter than ML_AUTH_KEY_MAX */
     const char *device_name;    /* Device hostname on the tailnet */
     bool enable_derp;           /* Enable DERP relay (default: true) */
     bool enable_stun;           /* Enable STUN endpoint discovery */
@@ -137,7 +141,8 @@ microlink_t *microlink_init(const microlink_config_t *config);
  * @param ml Handle
  * @param auth_key The new key (copied), or NULL or "" for none: the next
  *        registration goes on the node key alone
- * @return ESP_OK, or ESP_ERR_INVALID_SIZE for a key too long (nothing changed)
+ * @return ESP_OK, or ESP_ERR_INVALID_SIZE for a key of ML_AUTH_KEY_MAX bytes
+ *         or more (nothing changed)
  *
  * The instance keeps its own copy of the key from microlink_init() on; this
  * wipes it and copies the new one, under the lock a registration holds while
