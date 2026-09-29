@@ -144,46 +144,113 @@ int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags) {
  * comes first, after at most a few table size updates */
 #define STATUS_BLOCK_MAX 128
 
-int ml_h2_final_status(const uint8_t *frames, size_t len, uint32_t stream) {
+enum { H2_DATA = 0x0, H2_HEADERS = 0x1, H2_RST_STREAM = 0x3, H2_CONTINUATION = 0x9 };
+enum { H2_END_STREAM = 0x1, H2_END_HEADERS = 0x4, H2_PADDED = 0x8 };
+
+bool ml_h2_next_frame(const uint8_t *frames, size_t len, size_t *pos, ml_h2_frame_t *f) {
+    if (*pos > len || len - *pos < 9) return false;
+    const uint8_t *h = frames + *pos;
+    const size_t flen = ((size_t)h[0] << 16) | ((size_t)h[1] << 8) | h[2];
+    if (flen > len - *pos - 9) return false;  /* not whole yet */
+    f->type = h[3];
+    f->flags = h[4];
+    f->stream = ((uint32_t)(h[5] & 0x7f) << 24) | ((uint32_t)h[6] << 16) |
+                ((uint32_t)h[7] << 8) | h[8];
+    f->payload = h + 9;
+    f->len = flen;
+    *pos += 9 + flen;
+    return true;
+}
+
+void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
+                         uint8_t *data, size_t cap, ml_h2_response_t *r) {
+    memset(r, 0, sizeof(*r));
     uint8_t block[STATUS_BLOCK_MAX];
     size_t block_len = 0;
-    bool in_block = false;  /* a HEADERS frame for `stream` has come, not yet its END_HEADERS */
+    bool in_block = false;    /* a HEADERS frame for `stream` came, not yet its END_HEADERS */
+    bool block_ends = false;  /* that HEADERS frame carried END_STREAM */
+    bool final_seen = false;  /* a header block that is not 1xx is read */
     size_t pos = 0;
-    while (len - pos >= 9) {
-        const size_t flen = ((size_t)frames[pos] << 16) | ((size_t)frames[pos + 1] << 8) |
-                            frames[pos + 2];
-        const uint8_t type = frames[pos + 3];
-        const uint8_t flags = frames[pos + 4];
-        const uint32_t sid = ((uint32_t)(frames[pos + 5] & 0x7f) << 24) |
-                             ((uint32_t)frames[pos + 6] << 16) | ((uint32_t)frames[pos + 7] << 8) |
-                             frames[pos + 8];
-        pos += 9;
-        if (flen > len - pos) return 0;  /* cut short */
-        const uint8_t *payload = frames + pos;
-        pos += flen;
+    ml_h2_frame_t f;
+    while (!r->ended && !r->malformed && ml_h2_next_frame(frames, len, &pos, &f)) {
         size_t start = 0;
-        size_t end = flen;
+        size_t end = f.len;
         if (in_block) {
             /* Only its CONTINUATION frames may follow a HEADERS frame */
-            if (type != 0x09 || sid != stream) return 0;
-        } else if (type == 0x01 && sid == stream) {
-            if (!headers_fragment(payload, flen, flags, &start, &end)) return 0;
+            if (f.type != H2_CONTINUATION || f.stream != stream) {
+                r->malformed = true;
+                break;
+            }
+        } else if (f.stream != stream) {
+            continue;  /* the connection's frames, and other streams' */
+        } else if (f.type == H2_HEADERS) {
+            if (!headers_fragment(f.payload, f.len, f.flags, &start, &end)) {
+                r->malformed = true;
+                break;
+            }
             block_len = 0;
             in_block = true;
-        } else {
+            block_ends = f.flags & H2_END_STREAM;
+        } else if (f.type == H2_DATA) {
+            /* A body before the response's final header block, or padding
+             * that does not fit, is no response that can be read */
+            if (!final_seen || !headers_fragment(f.payload, f.len, f.flags & H2_PADDED,
+                                                 &start, &end)) {
+                r->malformed = true;
+                break;
+            }
+            const size_t n = end - start;
+            if (r->data_len < cap) {
+                const size_t take = n < cap - r->data_len ? n : cap - r->data_len;
+                memcpy(data + r->data_len, f.payload + start, take);
+            }
+            r->data_len += n;
+            r->ended = f.flags & H2_END_STREAM;
             continue;
+        } else if (f.type == H2_RST_STREAM) {
+            r->ended = true;  /* reset: nothing more comes on it */
+            r->reset = true;
+            continue;
+        } else {
+            continue;  /* PRIORITY, WINDOW_UPDATE and the like */
         }
-        const size_t take = end - start < STATUS_BLOCK_MAX - block_len
-                                ? end - start : STATUS_BLOCK_MAX - block_len;
+        /* A HEADERS or CONTINUATION frame of the block */
+        const size_t n = end - start;
+        const size_t take = n < STATUS_BLOCK_MAX - block_len ? n : STATUS_BLOCK_MAX - block_len;
         if (take > 0) {
-            memcpy(block + block_len, payload + start, take);
+            memcpy(block + block_len, f.payload + start, take);
             block_len += take;
         }
-        if (!(flags & 0x04)) continue;  /* no END_HEADERS: CONTINUATION follows */
+        if (!(f.flags & H2_END_HEADERS)) continue;  /* CONTINUATION follows */
         in_block = false;
-        const int status = block_status(block, block_len);
-        if (status < 100 || status > 199) return status;
-        /* An interim response: the final one follows */
+        if (!final_seen) {
+            const int status = block_status(block, block_len);
+            if (status >= 100 && status <= 199) {
+                /* An interim response: the final one follows; one that ends
+                 * the stream is a broken response */
+                if (block_ends) r->malformed = true;
+                continue;
+            }
+            final_seen = true;
+            r->status = status;
+        }
+        /* else: trailers, which do not change the status */
+        r->ended = block_ends;
     }
-    return 0;
+    if (r->malformed) {
+        r->status = 0;
+        r->data_len = 0;
+    }
+}
+
+bool ml_h2_response_complete(const uint8_t *frames, size_t len, uint32_t stream) {
+    ml_h2_response_t r;
+    ml_h2_read_response(frames, len, stream, NULL, 0, &r);
+    return r.ended || r.malformed;
+}
+
+int ml_h2_final_status(const uint8_t *frames, size_t len, uint32_t stream) {
+    ml_h2_response_t r;
+    ml_h2_read_response(frames, len, stream, NULL, 0, &r);
+    return r.status;
 }

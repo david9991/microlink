@@ -171,7 +171,7 @@ static size_t frame(uint8_t *out, uint8_t type, uint8_t flags, uint32_t stream,
     return 9 + len;
 }
 
-enum { DATA = 0x0, HEADERS = 0x1, SETTINGS = 0x4, CONTINUATION = 0x9 };
+enum { DATA = 0x0, HEADERS = 0x1, RST_STREAM = 0x3, SETTINGS = 0x4, WINDOW_UPDATE = 0x8, CONTINUATION = 0x9 };
 enum { END_STREAM = 0x1, END_HEADERS = 0x4, PADDED = 0x8 };
 
 static void read_every_final_status(void) {
@@ -259,13 +259,23 @@ static void read_random_payloads(void) {
 
 /* Random runs of frames: HEADERS, CONTINUATION, DATA and SETTINGS on streams
  * 0, 1 and 3, their payloads a status or random bytes, cut anywhere */
+/* Random runs of frames: HEADERS, CONTINUATION, DATA, RST_STREAM, SETTINGS
+ * and WINDOW_UPDATE on streams 0, 1 and 3, their payloads a status or random
+ * bytes, their flags random, cut anywhere. Every reader walks them alike:
+ * what the run cut short says once it is complete is what the whole run
+ * says, a malformed run reads as nothing, and the status is never 1xx. */
 static void read_random_frames(void) {
-    static const uint8_t types[] = {HEADERS, HEADERS, CONTINUATION, CONTINUATION, DATA, SETTINGS};
+    static const uint8_t types[] = {HEADERS, HEADERS, CONTINUATION, CONTINUATION,
+                                    DATA, DATA, RST_STREAM, SETTINGS, WINDOW_UPDATE};
     static const uint32_t streams[] = {1, 1, 1, 0, 3};
+    int completes = 0;
+    int statuses = 0;
+    int bodies = 0;
     for (int round = 0; round < 50000; round++) {
         uint8_t buf[512];
         size_t n = 0;
-        const int frames = (int)(next() % 6);
+        size_t data_sum = 0;
+        const int frames = (int)(next() % 7);
         for (int f = 0; f < frames; f++) {
             uint8_t payload[24];
             const size_t len = next() % sizeof payload;
@@ -276,16 +286,130 @@ static void read_random_frames(void) {
                 const struct vector *v = &vectors[next() % COUNT(vectors)];
                 memcpy(payload, v->bytes, v->len < len ? v->len : len);
             }
-            n += frame(buf + n, types[next() % sizeof types], (uint8_t)next(),
-                       streams[next() % COUNT(streams)], payload, len);
+            const uint8_t type = types[next() % sizeof types];
+            /* Mostly the flags a real server sends */
+            const uint8_t flags = next() % 3 ? (uint8_t)(next() & (END_STREAM | END_HEADERS))
+                                             : (uint8_t)next();
+            if (type == DATA) data_sum += len;
+            n += frame(buf + n, type, flags, streams[next() % COUNT(streams)], payload, len);
         }
         const size_t cut = n ? next() % (n + 1) : 0;
         uint8_t *copy = malloc(cut ? cut : 1);
         memcpy(copy, buf, cut);
-        const int got = ml_h2_final_status(copy, cut, 1);
-        CHECK(status_like(got) && (got < 100 || got > 199), "random frames %d: %d", round, got);
+        const size_t cap = next() % 32;
+        uint8_t data_cut[32];
+        uint8_t data_full[32];
+        ml_h2_response_t r_cut;
+        ml_h2_response_t r_full;
+        ml_h2_read_response(copy, cut, 1, data_cut, cap, &r_cut);
+        ml_h2_read_response(buf, n, 1, data_full, cap, &r_full);
+        const bool complete = ml_h2_response_complete(copy, cut, 1);
+        CHECK(status_like(r_cut.status) && (r_cut.status < 100 || r_cut.status > 199),
+              "random frames %d: status %d", round, r_cut.status);
+        CHECK(ml_h2_final_status(copy, cut, 1) == r_cut.status, "random frames %d: final status", round);
+        CHECK(complete == (r_cut.ended || r_cut.malformed), "random frames %d: complete", round);
+        CHECK(!r_cut.malformed || (r_cut.status == 0 && r_cut.data_len == 0),
+              "random frames %d: malformed reads as nothing", round);
+        CHECK(r_cut.data_len <= data_sum, "random frames %d: body %zu of %zu", round, r_cut.data_len,
+              data_sum);
+        if (complete) {
+            completes++;
+            CHECK(r_full.status == r_cut.status && r_full.data_len == r_cut.data_len &&
+                      r_full.ended == r_cut.ended && r_full.malformed == r_cut.malformed &&
+                      memcmp(data_full, data_cut, r_cut.data_len < cap ? r_cut.data_len : cap) == 0,
+                  "random frames %d: a complete response changes with more frames", round);
+        }
+        statuses += r_full.status != 0;
+        bodies += r_full.data_len != 0;
         free(copy);
     }
+    /* The sweep reaches statuses, bodies and ends, not only malformed runs */
+    CHECK(completes > 5000 && statuses > 1000 && bodies > 200, "completes %d, statuses %d, bodies %d",
+          completes, statuses, bodies);
+}
+
+/* What a response's walk reads: its body, padding off; a body cut to the
+ * buffer but counted whole; the malformed runs; a reset */
+static void read_every_response(void) {
+    uint8_t buf[256];
+    uint8_t data[16];
+    ml_h2_response_t r;
+    size_t n;
+    const uint8_t s200[] = {0x88};
+    const uint8_t s103[] = {0x08, 0x03, '1', '0', '3'};
+    const uint8_t s401[] = {0x08, 0x03, '4', '0', '1'};
+    const uint8_t body[] = {'{', '"', 'a', '"', ':', '1', '}'};
+    const uint8_t padded_body[] = {0x02, 'o', 'k', 0x00, 0x00};
+
+    /* HEADERS, then the body in two DATA frames, one padded */
+    n = frame(buf, HEADERS, END_HEADERS, 1, s200, sizeof s200);
+    n += frame(buf + n, DATA, 0, 1, body, sizeof body);
+    n += frame(buf + n, DATA, PADDED | END_STREAM, 1, padded_body, sizeof padded_body);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.status == 200 && r.ended && !r.malformed && r.data_len == 9 &&
+              memcmp(data, "{\"a\":1}ok", 9) == 0,
+          "body: %d %zu", r.status, r.data_len);
+    CHECK(ml_h2_response_complete(buf, n, 1), "body: complete");
+    CHECK(!ml_h2_response_complete(buf, n - 1, 1), "body: last frame cut: not complete");
+    /* A body larger than the buffer: counted whole, copied as far as it fits */
+    ml_h2_read_response(buf, n, 1, data, 4, &r);
+    CHECK(r.data_len == 9 && memcmp(data, "{\"a\"", 4) == 0, "cut body: %zu", r.data_len);
+
+    /* A DATA frame between a HEADERS frame and its CONTINUATION: every
+     * reader says the same — complete, no status, no body */
+    n = frame(buf, HEADERS, 0, 1, s401, 2);
+    n += frame(buf + n, DATA, END_STREAM, 1, body, sizeof body);
+    n += frame(buf + n, CONTINUATION, END_HEADERS, 1, s401 + 2, 3);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.malformed && r.status == 0 && r.data_len == 0, "interleaved DATA");
+    CHECK(ml_h2_response_complete(buf, n, 1), "interleaved DATA: complete");
+    CHECK(ml_h2_final_status(buf, n, 1) == 0, "interleaved DATA: no status");
+
+    /* DATA before any header block */
+    n = frame(buf, DATA, END_STREAM, 1, body, sizeof body);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.malformed, "DATA first");
+
+    /* DATA whose padding does not fit */
+    const uint8_t bad_padding[] = {0x05, 'x'};
+    n = frame(buf, HEADERS, END_HEADERS, 1, s200, sizeof s200);
+    n += frame(buf + n, DATA, PADDED | END_STREAM, 1, bad_padding, sizeof bad_padding);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.malformed && r.status == 0, "DATA padding past its end");
+
+    /* A 1xx that ends the stream */
+    n = frame(buf, HEADERS, END_HEADERS | END_STREAM, 1, s103, sizeof s103);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.malformed && ml_h2_response_complete(buf, n, 1), "1xx with END_STREAM");
+
+    /* A status alone, no body: ended by the HEADERS frame's END_STREAM */
+    n = frame(buf, HEADERS, END_HEADERS | END_STREAM, 1, s401, sizeof s401);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.status == 401 && r.ended && r.data_len == 0, "status alone");
+
+    /* END_STREAM on a HEADERS frame whose block goes on: not ended until its
+     * CONTINUATION is in */
+    n = frame(buf, HEADERS, END_STREAM, 1, s401, 2);
+    CHECK(!ml_h2_response_complete(buf, n, 1), "END_STREAM, block open");
+    n += frame(buf + n, CONTINUATION, END_HEADERS, 1, s401 + 2, 3);
+    CHECK(ml_h2_response_complete(buf, n, 1) && ml_h2_final_status(buf, n, 1) == 401,
+          "END_STREAM, block closed");
+
+    /* A reset ends the response: nothing more to wait for */
+    const uint8_t cancel[] = {0x00, 0x00, 0x00, 0x08};
+    n = frame(buf, HEADERS, END_HEADERS, 1, s200, sizeof s200);
+    n += frame(buf + n, RST_STREAM, 0, 1, cancel, sizeof cancel);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.ended && r.reset && r.status == 200, "reset");
+
+    /* Another stream's frames, and the connection's, are passed over */
+    n = frame(buf, SETTINGS, 0, 0, NULL, 0);
+    n += frame(buf + n, HEADERS, END_HEADERS | END_STREAM, 3, s401, sizeof s401);
+    n += frame(buf + n, HEADERS, END_HEADERS, 1, s200, sizeof s200);
+    n += frame(buf + n, DATA, END_STREAM, 3, body, sizeof body);
+    n += frame(buf + n, DATA, END_STREAM, 1, body, 2);
+    ml_h2_read_response(buf, n, 1, data, sizeof data, &r);
+    CHECK(r.status == 200 && r.ended && r.data_len == 2, "other streams: %d %zu", r.status, r.data_len);
 }
 
 /* Every prefix of a response split over HEADERS and CONTINUATION reads as no
@@ -317,6 +441,7 @@ int main(void) {
     read_random_payloads();
     read_every_final_status();
     read_every_frames_prefix();
+    read_every_response();
     read_random_frames();
     if (failures) {
         printf("%d failed\n", failures);

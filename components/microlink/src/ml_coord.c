@@ -982,7 +982,6 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
 
     uint8_t *resp_buf = ml_psram_malloc(8192);
     if (!resp_buf) { free(h2_resp); return -1; }
-    size_t resp_total = 0;
 
     /* Accumulate Noise frames into H2 buffer.
      * Scan each frame for H2 END_STREAM on stream 1 to break early
@@ -1000,71 +999,34 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
 
         ESP_LOGI(TAG, "RegisterResponse Noise frame %d: %d bytes", frame_count, frame_len);
 
-        if (h2_resp_len + frame_len < 16384) {
+        /* A chunk that does not fit would leave a hole in the frames: stop,
+         * and read what came */
+        const bool fits = h2_resp_len + frame_len <= 16384;
+        if (fits) {
             memcpy(h2_resp + h2_resp_len, frame_buf, frame_len);
             h2_resp_len += frame_len;
         }
         free(frame_buf);
-
-        /* Scan accumulated buffer for H2 END_STREAM on stream 1, with no
-         * header block of it still waiting for its CONTINUATION */
-        int scan = 0;
-        bool ended = false;
-        bool headers_open = false;
-        while (scan + 9 <= (int)h2_resp_len) {
-            uint32_t fl = (h2_resp[scan] << 16) | (h2_resp[scan+1] << 8) | h2_resp[scan+2];
-            uint8_t ft = h2_resp[scan+3];
-            uint8_t ff = h2_resp[scan+4];
-            uint32_t fs = ((h2_resp[scan+5] & 0x7F) << 24) | (h2_resp[scan+6] << 16) |
-                          (h2_resp[scan+7] << 8) | h2_resp[scan+8];
-            if (fl > 1000000 || scan + 9 + (int)fl > (int)h2_resp_len) break;
-            if (fs == 1) {
-                /* HEADERS (0x01) or CONTINUATION (0x09) without END_HEADERS (0x04) */
-                if (ft == 0x01 || ft == 0x09) headers_open = !(ff & 0x04);
-                /* END_STREAM (0x01) in a DATA (0x00) or HEADERS frame */
-                if ((ft == 0x00 || ft == 0x01) && (ff & 0x01)) ended = true;
-            }
-            scan += 9 + fl;
-        }
-        got_register_end = ended && !headers_open;
-    }
-
-    /* The response's final :status: its header block may go on in
-     * CONTINUATION frames, and an interim (1xx) response come first */
-    const int status = ml_h2_final_status(h2_resp, h2_resp_len, 1);
-
-    /* Parse H2 frames from accumulated buffer */
-    int fpos = 0;
-    while (fpos + 9 <= (int)h2_resp_len) {
-        uint32_t f_len = (h2_resp[fpos] << 16) | (h2_resp[fpos + 1] << 8) | h2_resp[fpos + 2];
-        uint8_t f_type = h2_resp[fpos + 3];
-        uint8_t f_flags = h2_resp[fpos + 4];
-        uint32_t f_stream = ((h2_resp[fpos + 5] & 0x7F) << 24) | (h2_resp[fpos + 6] << 16) |
-                             (h2_resp[fpos + 7] << 8) | h2_resp[fpos + 8];
-        fpos += 9;
-
-        ESP_LOGD(TAG, "  Register H2 frame: type=%d flags=0x%02x len=%lu stream=%lu",
-                 f_type, f_flags, (unsigned long)f_len, (unsigned long)f_stream);
-
-        if (f_len > 1000000 || fpos + (int)f_len > (int)h2_resp_len) {
-            ESP_LOGW(TAG, "  Invalid H2 frame length %lu at pos %d, stopping", (unsigned long)f_len, fpos - 9);
+        if (!fits) {
+            ESP_LOGW(TAG, "RegisterResponse larger than 16 KB");
             break;
         }
 
-        /* Only process frames on stream 1 (our RegisterResponse).
-         * Stream 0 = connection-level (SETTINGS, WINDOW_UPDATE, PING) */
-        if (f_stream == 1) {
-            if (f_type == 0x00 && f_len > 0) {  /* DATA frame */
-                if (resp_total + f_len < 8192) {
-                    memcpy(resp_buf + resp_total, h2_resp + fpos, f_len);
-                    resp_total += f_len;
-                }
-            }
-        }
-
-        fpos += f_len;
+        /* Stop once the response has ended — its END_STREAM in, with no
+         * header block of it still waiting for its CONTINUATION — or the
+         * frames can no longer make one */
+        got_register_end = ml_h2_response_complete(h2_resp, h2_resp_len, 1);
     }
+
+    /* The response, read by the one walk its end was found by: its final
+     * :status (its header block may go on in CONTINUATION frames, and an
+     * interim 1xx come first) and its body, DATA frames' padding off. A body
+     * that does not fit the buffer, its NUL included, is not read. */
+    ml_h2_response_t response;
+    ml_h2_read_response(h2_resp, h2_resp_len, 1, resp_buf, 8191, &response);
     free(h2_resp);
+    const int status = response.status;
+    size_t resp_total = response.data_len <= 8191 ? response.data_len : 0;
 
     /* What the answer was, as far as it is read: a missing or unparsable body
      * and a status that is not 2xx are answers too, and fail the registration
@@ -1074,9 +1036,9 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
 
     /* Send connection-level WINDOW_UPDATE for RegisterResponse.
      * Stream 1 is closed (END_STREAM received), only update connection level. */
-    if (resp_total > 0) {
+    if (response.data_len > 0) {
         uint8_t wu_buf[13];
-        int wu_len = ml_h2_build_window_update(wu_buf, 13, 0, (uint32_t)resp_total);
+        int wu_len = ml_h2_build_window_update(wu_buf, 13, 0, (uint32_t)response.data_len);
         noise_send(ml, noise, wu_buf, wu_len);
     }
 

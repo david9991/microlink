@@ -51,18 +51,62 @@ microlink_registration_t ml_register_classify(const ml_register_reply_t *reply);
  */
 int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags);
 
+/* One HTTP/2 frame of a run received */
+typedef struct {
+    uint8_t type;
+    uint8_t flags;
+    uint32_t stream;
+    const uint8_t *payload;  /* inside the run */
+    size_t len;
+} ml_h2_frame_t;
+
 /**
- * @brief The final :status of a stream's response, from the frames received
+ * @brief The frame at *pos of a run of frames, each with its 9-byte header
+ * @return true, and *pos past it; false when no whole frame is there (yet)
+ */
+bool ml_h2_next_frame(const uint8_t *frames, size_t len, size_t *pos, ml_h2_frame_t *f);
+
+/* A stream's response, as far as a run of frames holds it */
+typedef struct {
+    int status;        /* its final :status; 0 until one is read, or when it cannot be */
+    size_t data_len;   /* its body's length, padding off (more than was copied, if cut) */
+    bool ended;        /* END_STREAM came, its header block (if any) finished; or a reset */
+    bool reset;        /* RST_STREAM ended it */
+    bool malformed;    /* frames no response is made of: status and data_len are 0 */
+} ml_h2_response_t;
+
+/**
+ * @brief Read a stream's response from a run of frames: the one walk every
+ *        reader of a response shares
  * @param frames HTTP/2 frames as received, each with its 9-byte header
  * @param len Their length
  * @param stream The stream the response is on
- * @return The status, or 0 when none could be read
+ * @param data Where its body goes, DATA frames' padding off (may be NULL
+ *        when `cap` is 0)
+ * @param cap How much of the body `data` takes; the rest is counted, not copied
+ * @param r What was read
  *
  * A header block is a HEADERS frame and the CONTINUATION frames that follow
  * it on the same stream up to END_HEADERS; its status is read as
  * ml_h2_response_status reads one. An interim response (1xx) is skipped: the
- * status is the first that is not 1xx. A block not finished within `frames`,
- * a frame cut short, and any other frame between a HEADERS and its
- * END_HEADERS give 0.
+ * status is that of the first block that is not 1xx, and a later block
+ * (trailers) does not change it. Frames of other streams are passed over. A
+ * frame not whole yet ends the walk: more may come. Malformed, and so no
+ * response: any frame between a HEADERS frame and its END_HEADERS, a DATA
+ * frame before the final header block, padding that does not fit, and a 1xx
+ * that ends the stream.
+ */
+void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
+                         uint8_t *data, size_t cap, ml_h2_response_t *r);
+
+/**
+ * @brief Whether there is nothing more to wait for on the stream: its
+ *        response ended (or was reset), or the frames are malformed
+ */
+bool ml_h2_response_complete(const uint8_t *frames, size_t len, uint32_t stream);
+
+/**
+ * @brief The final :status of a stream's response (ml_h2_read_response's),
+ *        0 when none could be read
  */
 int ml_h2_final_status(const uint8_t *frames, size_t len, uint32_t stream);
