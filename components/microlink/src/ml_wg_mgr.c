@@ -236,9 +236,21 @@ struct wg_netif_call {
     struct netif *netif;
 };
 
-/* In lwIP's context: link the netif into lwIP's list and bring it up. */
+/* In lwIP's context: link the netif into lwIP's list and bring it up, with
+ * a number no other netif has, as netif_add would give it (lwIP finds a
+ * netif by its number: netif_get_by_index, a socket's bound interface). */
 static err_t wg_netif_link(struct tcpip_api_call_data *call) {
     struct netif *netif = ((struct wg_netif_call *)call)->netif;
+    u8_t num = 0;
+    for (struct netif *n = netif_list; n != NULL;) {
+        if (n->num == num) {
+            num++;
+            n = netif_list;  /* taken: look again from the start */
+        } else {
+            n = n->next;
+        }
+    }
+    netif->num = num;
     netif->next = netif_list;
     netif_list = netif;
     netif_set_up(netif);
