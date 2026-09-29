@@ -31,6 +31,7 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/platform_util.h"
 #include <string.h>
 #include <errno.h>
 
@@ -687,6 +688,18 @@ static int do_h2_preface(microlink_t *ml, ml_noise_state_t *noise) {
  * State: REGISTER - Send RegisterRequest, parse RegisterResponse
  * ========================================================================== */
 
+/* The most a RegisterRequest's JSON takes: an auth key of up to a few hundred
+ * bytes, the node key, the challenge response and the Hostinfo. */
+#define REGISTER_JSON_MAX 1536
+
+/* Free a buffer that held the auth key, wiped first. */
+static void free_wiped(void *p, size_t len) {
+    if (p) {
+        mbedtls_platform_zeroize(p, len);
+        free(p);
+    }
+}
+
 static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     int64_t t_reg_start = esp_timer_get_time();
 
@@ -703,10 +716,12 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     snprintf(key_str, sizeof(key_str), "nodekey:%s", key_hex);
     cJSON_AddStringToObject(root, "NodeKey", key_str);
 
-    /* Auth - only include if auth_key is valid (matching v1 behavior) */
+    /* Auth - only include if auth_key is valid (matching v1 behavior). Every
+     * copy of the key made here is wiped before it is freed. */
+    cJSON *auth_key = NULL;
     if (ml->config.auth_key && strlen(ml->config.auth_key) > 0) {
         cJSON *auth = cJSON_CreateObject();
-        cJSON_AddStringToObject(auth, "AuthKey", ml->config.auth_key);
+        auth_key = cJSON_AddStringToObject(auth, "AuthKey", ml->config.auth_key);
         cJSON_AddItemToObject(root, "Auth", auth);
     }
 
@@ -755,16 +770,28 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
         ESP_LOGW(TAG, "No nodeKeyChallenge received - registration may fail!");
     }
 
-    char *json_str = cJSON_PrintUnformatted(root);
+    /* Printed into a buffer of its own, to be wiped: cJSON's own printer grows
+     * its buffer by copying, and frees each smaller copy as it goes. */
+    char *json_str = ml_psram_malloc(REGISTER_JSON_MAX);
+    const bool printed = json_str &&
+                         cJSON_PrintPreallocated(root, json_str, REGISTER_JSON_MAX, false);
+    if (auth_key && auth_key->valuestring) {
+        mbedtls_platform_zeroize(auth_key->valuestring, strlen(auth_key->valuestring));
+    }
     cJSON_Delete(root);
-    if (!json_str) return -1;
+    if (!printed) {
+        ESP_LOGE(TAG, "RegisterRequest does not fit %d bytes", REGISTER_JSON_MAX);
+        free_wiped(json_str, REGISTER_JSON_MAX);
+        return -1;
+    }
 
     size_t json_len = strlen(json_str);
     ESP_LOGI(TAG, "RegisterRequest: %d bytes", (int)json_len);
 
     /* Build HTTP/2 HEADERS + DATA frames */
-    uint8_t *h2_buf = ml_psram_malloc(json_len + 512);
-    if (!h2_buf) { free(json_str); return -1; }
+    const size_t h2_cap = json_len + 512;
+    uint8_t *h2_buf = ml_psram_malloc(h2_cap);
+    if (!h2_buf) { free_wiped(json_str, REGISTER_JSON_MAX); return -1; }
 
     int h2_pos = 0;
 
@@ -773,23 +800,28 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
                                               "POST", "/machine/register",
                                               CTRL_HOST(ml), "application/json",
                                               1, false);
-    if (hdr_len < 0) { free(json_str); free(h2_buf); return -1; }
+    if (hdr_len < 0) {
+        free_wiped(json_str, REGISTER_JSON_MAX);
+        free_wiped(h2_buf, h2_cap);
+        return -1;
+    }
     h2_pos += hdr_len;
 
     /* DATA frame (JSON body, END_STREAM) */
     int data_len = ml_h2_build_data_frame(h2_buf + h2_pos, json_len + 512 - h2_pos,
                                             (uint8_t *)json_str, json_len,
                                             1, true);
-    free(json_str);
-    if (data_len < 0) { free(h2_buf); return -1; }
+    free_wiped(json_str, REGISTER_JSON_MAX);
+    if (data_len < 0) { free_wiped(h2_buf, h2_cap); return -1; }
     h2_pos += data_len;
 
-    /* Encrypt and send as one Noise frame */
-    if (noise_send(ml, noise, h2_buf, h2_pos) < 0) {
-        free(h2_buf);
+    /* Encrypt and send as one Noise frame (noise_send encrypts straight into
+     * its own frame, so the plaintext is only here) */
+    const int sent = noise_send(ml, noise, h2_buf, h2_pos);
+    free_wiped(h2_buf, h2_cap);
+    if (sent < 0) {
         return -1;
     }
-    free(h2_buf);
 
     int64_t t_reg_sent = esp_timer_get_time();
     ESP_LOGI(TAG, "RegisterRequest sent (%d H2 bytes) [TIMING] send: %lld ms",
