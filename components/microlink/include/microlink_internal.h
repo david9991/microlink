@@ -219,7 +219,10 @@ typedef struct {
         ML_PEER_ADD,
         ML_PEER_REMOVE,
         ML_PEER_UPDATE_ENDPOINT,
+        ML_PEER_FULL_MAP_BEGIN,  /* a full peer list follows, as ADDs */
+        ML_PEER_FULL_MAP_END,    /* it is whole if `complete`: drop the peers it lacked */
     } action;
+    bool complete;               /* FULL_MAP_END: every ADD of the list was queued */
     uint32_t vpn_ip;
     uint8_t public_key[32];
     uint8_t disco_key[32];
@@ -245,6 +248,11 @@ typedef struct {
     uint8_t disco_key[32];
     char hostname[64];
     bool active;
+    /* Restored from the NVS cache at start, its name cut to 6 characters, and
+     * not yet in a map: never a MagicDNS answer */
+    bool cached;
+    /* In the full map being applied */
+    bool in_map;
 
     /* Endpoints */
     struct {
@@ -342,6 +350,9 @@ struct microlink_s {
     /* State (atomic reads from any task, writes only from coord) */
     volatile microlink_state_t state;
     volatile uint32_t vpn_ip;
+
+    /* A full peer map has been applied since start (written by wg_mgr) */
+    volatile bool map_applied;
 
     /* The last registration's answer, and whether it carried the auth key
      * (written by coord) */

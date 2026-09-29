@@ -280,6 +280,16 @@ const char *microlink_imei_device_name(void);
  */
 uint32_t microlink_resolve(const microlink_t *ml, const char *hostname);
 
+/**
+ * @brief Whether a full peer map from the control server has been applied
+ * @return true from the first full map on, through reconnects (which keep the
+ *         peers of the last map applied)
+ *
+ * Until then the peer table holds only the peers cached in NVS, their names
+ * cut to 6 characters; microlink_resolve() never answers from those.
+ */
+bool microlink_map_applied(const microlink_t *ml);
+
 /* ============================================================================
  * UDP Socket API
  *

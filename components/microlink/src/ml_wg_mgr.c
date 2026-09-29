@@ -441,6 +441,8 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     ml_copy_name(p->hostname, sizeof(p->hostname), update->hostname);
     p->derp_region = update->derp_region;
     p->active = true;
+    p->cached = false;  /* the map's name, whole */
+    p->in_map = true;
 
     /* Copy endpoints */
     p->endpoint_count = update->endpoint_count;
@@ -586,10 +588,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     return idx;
 }
 
-static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
-    int idx = find_peer_by_key(ml, update->public_key);
-    if (idx < 0) return;
-
+static void remove_peer_at(microlink_t *ml, int idx) {
     /* Remove from wireguard-lwip */
     if (ml->wg_netif && ml->peers[idx].wg_peer_index >= 0) {
         struct netif *netif = (struct netif *)ml->wg_netif;
@@ -601,11 +600,30 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
     ESP_LOGI(TAG, "Peer removed: %s (%s)", ml->peers[idx].hostname, ip_str);
 
     ml->peers[idx].active = false;
+    ml->peers[idx].cached = false;
 
     /* Compact peer_count */
     while (ml->peer_count > 0 && !ml->peers[ml->peer_count - 1].active) {
         ml->peer_count--;
     }
+}
+
+static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
+    int idx = find_peer_by_key(ml, update->public_key);
+    if (idx >= 0) remove_peer_at(ml, idx);
+}
+
+/* A full map's end: drop what it did not contain — peers of earlier maps,
+ * and cached peers — when the whole list was queued; the map is applied. */
+static void full_map_applied(microlink_t *ml, bool complete) {
+    if (complete) {
+        for (int i = 0; i < ml->peer_count; i++) {
+            if (ml->peers[i].active && !ml->peers[i].in_map) {
+                remove_peer_at(ml, i);
+            }
+        }
+    }
+    ml->map_applied = true;
 }
 
 static void process_peer_updates(microlink_t *ml) {
@@ -618,6 +636,14 @@ static void process_peer_updates(microlink_t *ml) {
             break;
         case ML_PEER_REMOVE:
             remove_peer(ml, update);
+            break;
+        case ML_PEER_FULL_MAP_BEGIN:
+            for (int i = 0; i < ml->peer_count; i++) {
+                ml->peers[i].in_map = false;
+            }
+            break;
+        case ML_PEER_FULL_MAP_END:
+            full_map_applied(ml, update->complete);
             break;
         case ML_PEER_UPDATE_ENDPOINT:
             /* Update endpoint/DERP for existing peer (delta patch) */

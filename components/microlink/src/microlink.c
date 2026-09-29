@@ -837,6 +837,10 @@ int ml_connect_stoppable(microlink_t *ml, int sock, const struct sockaddr *addr,
 #endif
 }
 
+bool microlink_map_applied(const microlink_t *ml) {
+    return ml && ml->map_applied;
+}
+
 uint64_t ml_get_time_ms(void) {
     return (uint64_t)(esp_timer_get_time() / 1000ULL);
 }
@@ -864,7 +868,8 @@ uint32_t microlink_resolve(const microlink_t *ml, const char *hostname) {
 
     for (int i = 0; i < ml->peer_count; i++) {
         const ml_peer_t *p = &ml->peers[i];
-        if (!p->active || p->hostname[0] == '\0') continue;
+        /* A cached peer's name is cut: it could stand for another peer */
+        if (!p->active || p->cached || p->hostname[0] == '\0') continue;
 
         /* 1. Exact match (case-insensitive) */
         if (strncasecmp_local(p->hostname, hostname, sizeof(p->hostname)) == 0) {

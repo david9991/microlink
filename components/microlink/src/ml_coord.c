@@ -1128,12 +1128,30 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
  * State: FETCH_PEERS - Send MapRequest, parse MapResponse
  * ========================================================================== */
 
+/* Queue a mark of a full peer list's start or end for wg_mgr; false if the
+ * queue would not take it. */
+static bool queue_full_map_mark(microlink_t *ml, bool end, bool complete) {
+    ml_peer_update_t *mark = ml_psram_calloc(1, sizeof(ml_peer_update_t));
+    if (!mark) return false;
+    mark->action = end ? ML_PEER_FULL_MAP_END : ML_PEER_FULL_MAP_BEGIN;
+    mark->complete = complete;
+    if (xQueueSend(ml->peer_update_queue, &mark, pdMS_TO_TICKS(100)) != pdTRUE) {
+        free(mark);
+        return false;
+    }
+    return true;
+}
+
 static void parse_peers_from_map_response(microlink_t *ml, cJSON *root) {
     /* Try all field names used by Tailscale (copied from v1 lines 3176-3184):
      *   "Peers"        - Full peer list (initial Stream=false response)
      *   "PeersChanged" - Incremental updates (Stream=true long-poll)
      *   "peers"        - Lowercase fallback */
     cJSON *peers = cJSON_GetObjectItem(root, "Peers");
+    /* "Peers" is the whole list: what it lacks is dropped once it is applied,
+     * cached peers among them. It is whole only if every peer was queued. */
+    const bool full = cJSON_IsArray(peers);
+    bool complete = false;
     if (!peers) {
         peers = cJSON_GetObjectItem(root, "PeersChanged");
         if (peers) ESP_LOGI(TAG, "Using 'PeersChanged' field for peer list");
@@ -1149,12 +1167,16 @@ static void parse_peers_from_map_response(microlink_t *ml, cJSON *root) {
 
     int count = cJSON_GetArraySize(peers);
     ESP_LOGI(TAG, "MapResponse: %d peers", count);
+    complete = full && queue_full_map_mark(ml, false, false);
 
     cJSON *peer;
     cJSON_ArrayForEach(peer, peers) {
         /* Allocate peer update (freed by wg_mgr after processing) */
         ml_peer_update_t *update = ml_psram_calloc(1, sizeof(ml_peer_update_t));
-        if (!update) continue;
+        if (!update) {
+            complete = false;
+            continue;
+        }
 
         update->action = ML_PEER_ADD;
 
@@ -1244,7 +1266,11 @@ static void parse_peers_from_map_response(microlink_t *ml, cJSON *root) {
         if (xQueueSend(ml->peer_update_queue, &update, pdMS_TO_TICKS(100)) != pdTRUE) {
             ESP_LOGW(TAG, "Peer update queue full, dropping %s", update->hostname);
             free(update);
+            complete = false;
         }
+    }
+    if (full && !queue_full_map_mark(ml, true, complete)) {
+        ESP_LOGW(TAG, "Peer update queue full: the map's end is not marked");
     }
 
 check_removed:
