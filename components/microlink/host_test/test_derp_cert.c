@@ -77,10 +77,11 @@ static void new_key(mbedtls_pk_context *key) {
     }
 }
 
-/* A certificate for `subject`, signed by `issuer_key` as `issuer`, parsed
- * onto the end of `chain` */
-static void new_cert(mbedtls_x509_crt *chain, mbedtls_pk_context *key, const char *subject,
-                     mbedtls_pk_context *issuer_key, const char *issuer, int is_ca) {
+/* A certificate for `subject` (and `san`, when not NULL), signed by
+ * `issuer_key` as `issuer`, parsed onto the end of `chain` */
+static void new_cert_san(mbedtls_x509_crt *chain, mbedtls_pk_context *key, const char *subject,
+                         mbedtls_pk_context *issuer_key, const char *issuer, int is_ca,
+                         const mbedtls_x509_san_list *san) {
     static unsigned char serial = 1;
     unsigned char der[2048];
     mbedtls_x509write_cert w;
@@ -94,6 +95,7 @@ static void new_cert(mbedtls_x509_crt *chain, mbedtls_pk_context *key, const cha
     if (ret == 0) ret = mbedtls_x509write_crt_set_serial_raw(&w, &serial, 1);
     if (ret == 0) ret = mbedtls_x509write_crt_set_validity(&w, "20000101000000", "20991231235959");
     if (ret == 0) ret = mbedtls_x509write_crt_set_basic_constraints(&w, is_ca, -1);
+    if (ret == 0 && san) ret = mbedtls_x509write_crt_set_subject_alternative_name(&w, san);
     const int len = ret == 0 ? mbedtls_x509write_crt_der(&w, der, sizeof der,
                                                          mbedtls_ctr_drbg_random, &drbg)
                              : ret;
@@ -105,16 +107,26 @@ static void new_cert(mbedtls_x509_crt *chain, mbedtls_pk_context *key, const cha
     }
 }
 
-/* The chain verified as the handshake verifies it; its flags, and the
- * result in *ret */
-static uint32_t verify(mbedtls_x509_crt *chain, const char *cert_name, int *ret) {
+static void new_cert(mbedtls_x509_crt *chain, mbedtls_pk_context *key, const char *subject,
+                     mbedtls_pk_context *issuer_key, const char *issuer, int is_ca) {
+    new_cert_san(chain, key, subject, issuer_key, issuer, is_ca, NULL);
+}
+
+/* The chain verified as the handshake verifies it, for `sni` (NULL: none
+ * sent); its flags, and the result in *ret */
+static uint32_t verify_for(mbedtls_x509_crt *chain, const char *sni, const char *cert_name,
+                           int *ret) {
     mbedtls_x509_crt no_ca;  /* esp_crt_bundle_attach's CA list: one empty certificate */
     mbedtls_x509_crt_init(&no_ca);
     uint32_t flags = 0;
-    *ret = mbedtls_x509_crt_verify(chain, &no_ca, NULL, HOST_NAME, &flags,
+    *ret = mbedtls_x509_crt_verify(chain, &no_ca, NULL, sni, &flags,
                                    ml_derp_verify_cert_name, (void *)cert_name);
     mbedtls_x509_crt_free(&no_ca);
     return flags;
+}
+
+static uint32_t verify(mbedtls_x509_crt *chain, const char *cert_name, int *ret) {
+    return verify_for(chain, HOST_NAME, cert_name, ret);
 }
 
 int main(void) {
@@ -137,7 +149,8 @@ int main(void) {
     new_key(&inter_key);
     new_key(&leaf_key);
 
-    mbedtls_x509_crt root, via_inter, via_root, self_signed, via_other;
+    mbedtls_x509_crt root, via_inter, via_root, self_signed, via_other, for_ip;
+    mbedtls_x509_crt_init(&for_ip);
     mbedtls_x509_crt_init(&root);
     mbedtls_x509_crt_init(&via_inter);
     mbedtls_x509_crt_init(&via_root);
@@ -155,6 +168,15 @@ int main(void) {
     new_cert(&self_signed, &leaf_key, "CN=" CERT_NAME, &leaf_key, "CN=" CERT_NAME, 0);
     /* A leaf a root outside the bundle signed */
     new_cert(&via_other, &leaf_key, "CN=" CERT_NAME, &other_root_key, "CN=Other Root", 0);
+    /* A leaf for an IP address, the bundle's root its signer: a relay whose
+     * HostName is an IP literal, verified with no SNI sent */
+    unsigned char ip[4] = { 192, 0, 2, 9 };
+    mbedtls_x509_san_list ip_san;
+    memset(&ip_san, 0, sizeof ip_san);
+    ip_san.node.type = MBEDTLS_X509_SAN_IP_ADDRESS;
+    ip_san.node.san.unstructured_name.p = ip;
+    ip_san.node.san.unstructured_name.len = sizeof ip;
+    new_cert_san(&for_ip, &leaf_key, "CN=Relay", &root_key, "CN=Bundle Root", 0, &ip_san);
 
     int ret;
     uint32_t flags = verify(&via_inter, CERT_NAME, &ret);
@@ -179,12 +201,20 @@ int main(void) {
     flags = verify(&via_other, CERT_NAME, &ret);
     CHECK(ret != 0, "a leaf of a root outside the bundle: fails (%d, %#x)", ret,
           (unsigned)flags);
+    flags = verify_for(&for_ip, NULL, "192.0.2.9", &ret);
+    CHECK(ret == 0 && flags == 0, "no SNI, a leaf for its IP address: passes (%d, %#x)", ret,
+          (unsigned)flags);
+    flags = verify_for(&for_ip, NULL, "192.0.2.10", &ret);
+    CHECK(ret != 0 && (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH),
+          "no SNI, a leaf for another IP address: fails on the name (%d, %#x)", ret,
+          (unsigned)flags);
 
     mbedtls_x509_crt_free(&root);
     mbedtls_x509_crt_free(&via_inter);
     mbedtls_x509_crt_free(&via_root);
     mbedtls_x509_crt_free(&self_signed);
     mbedtls_x509_crt_free(&via_other);
+    mbedtls_x509_crt_free(&for_ip);
     mbedtls_pk_free(&root_key);
     mbedtls_pk_free(&other_root_key);
     mbedtls_pk_free(&inter_key);

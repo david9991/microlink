@@ -41,6 +41,14 @@ static const char *TAG = "ml_derp";
 /* A DERP node's CertName that pins a self-signed certificate by its hash */
 #define DERP_CERT_PIN_PREFIX "sha256-raw:"
 
+/* Whether a name is an IP literal, which is never sent as the SNI (RFC 6066
+ * section 3) */
+static bool derp_ip_literal(const char *name) {
+    struct in_addr a4;
+    struct in6_addr a6;
+    return inet_pton(AF_INET, name, &a4) == 1 || inet_pton(AF_INET6, name, &a6) == 1;
+}
+
 /* ============================================================================
  * Custom BIO callbacks for non-blocking TLS I/O
  *
@@ -767,6 +775,8 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         derp_release(ml);
         return ESP_FAIL;
     }
+    /* The SNI is HostName, unless it is an IP literal: then none is sent */
+    const bool host_is_ip = derp_ip_literal(derp_host);
 #ifdef CONFIG_ML_DERP_VERIFY_CERT
     /* The relay's certificate and name, against ESP-IDF's bundle. A CertName
      * that pins a self-signed certificate by its hash cannot be verified so:
@@ -783,9 +793,11 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         derp_release(ml);
         return ESP_FAIL;
     }
-    /* The SNI is HostName (set below); a certificate for another name, its
-     * CertName, is held to that name in place of HostName */
-    if (strcmp(derp_cert, derp_host) != 0) {
+    /* The handshake verifies the SNI's name; a certificate for another name,
+     * its CertName, is held to that name in its place — and with no SNI
+     * sent, to its name at all, by this callback alone. The name lives in
+     * this function, through the handshake below. */
+    if (host_is_ip || strcmp(derp_cert, derp_host) != 0) {
         mbedtls_ssl_conf_verify(&ml->derp.ssl_conf, ml_derp_verify_cert_name, (void *)derp_cert);
     }
 #else
@@ -795,7 +807,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     mbedtls_ssl_conf_read_timeout(&ml->derp.ssl_conf, ML_CONNECT_TIMEOUT_MS);
 
     if (mbedtls_ssl_setup(&ml->derp.ssl, &ml->derp.ssl_conf) != 0 ||
-        mbedtls_ssl_set_hostname(&ml->derp.ssl, derp_host) != 0) {
+        mbedtls_ssl_set_hostname(&ml->derp.ssl, host_is_ip ? NULL : derp_host) != 0) {
         ESP_LOGE(TAG, "TLS setup failed");
         derp_release(ml);
         return ESP_FAIL;
