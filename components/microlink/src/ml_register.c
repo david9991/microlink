@@ -4,6 +4,7 @@
  */
 
 #include "ml_register.h"
+#include "ml_h2_frame.h"
 
 #include <string.h>
 
@@ -84,12 +85,12 @@ static bool headers_fragment(const uint8_t *payload, size_t len, uint8_t flags,
                              size_t *start, size_t *end) {
     size_t pos = 0;
     size_t stop = len;
-    if (flags & 0x08) {  /* PADDED */
+    if (flags & H2_FLAG_PADDED) {
         if (len < 1 || payload[0] >= len) return false;
         stop = len - payload[0];
         pos = 1;
     }
-    if (flags & 0x20) {  /* PRIORITY */
+    if (flags & H2_FLAG_PRIORITY) {
         pos += 5;
     }
     if (pos > stop) return false;
@@ -144,8 +145,6 @@ int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags) {
  * comes first, after at most a few table size updates */
 #define STATUS_BLOCK_MAX 128
 
-enum { H2_DATA = 0x0, H2_HEADERS = 0x1, H2_RST_STREAM = 0x3, H2_CONTINUATION = 0x9 };
-enum { H2_END_STREAM = 0x1, H2_END_HEADERS = 0x4, H2_PADDED = 0x8 };
 
 bool ml_h2_next_frame(const uint8_t *frames, size_t len, size_t *pos, ml_h2_frame_t *f) {
     if (*pos > len || len - *pos < 9) return false;
@@ -177,24 +176,24 @@ void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
         size_t end = f.len;
         if (in_block) {
             /* Only its CONTINUATION frames may follow a HEADERS frame */
-            if (f.type != H2_CONTINUATION || f.stream != stream) {
+            if (f.type != H2_FRAME_CONTINUATION || f.stream != stream) {
                 r->malformed = true;
                 break;
             }
         } else if (f.stream != stream) {
             continue;  /* the connection's frames, and other streams' */
-        } else if (f.type == H2_HEADERS) {
+        } else if (f.type == H2_FRAME_HEADERS) {
             if (!headers_fragment(f.payload, f.len, f.flags, &start, &end)) {
                 r->malformed = true;
                 break;
             }
             block_len = 0;
             in_block = true;
-            block_ends = f.flags & H2_END_STREAM;
-        } else if (f.type == H2_DATA) {
+            block_ends = f.flags & H2_FLAG_END_STREAM;
+        } else if (f.type == H2_FRAME_DATA) {
             /* A body before the response's final header block, or padding
              * that does not fit, is no response that can be read */
-            if (!final_seen || !headers_fragment(f.payload, f.len, f.flags & H2_PADDED,
+            if (!final_seen || !headers_fragment(f.payload, f.len, f.flags & H2_FLAG_PADDED,
                                                  &start, &end)) {
                 r->malformed = true;
                 break;
@@ -205,9 +204,9 @@ void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
                 memcpy(data + r->data_len, f.payload + start, take);
             }
             r->data_len += n;
-            r->ended = f.flags & H2_END_STREAM;
+            r->ended = f.flags & H2_FLAG_END_STREAM;
             continue;
-        } else if (f.type == H2_RST_STREAM) {
+        } else if (f.type == H2_FRAME_RST_STREAM) {
             r->ended = true;  /* reset: nothing more comes on it */
             r->reset = true;
             continue;
@@ -221,7 +220,7 @@ void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
             memcpy(block + block_len, f.payload + start, take);
             block_len += take;
         }
-        if (!(f.flags & H2_END_HEADERS)) continue;  /* CONTINUATION follows */
+        if (!(f.flags & H2_FLAG_END_HEADERS)) continue;  /* CONTINUATION follows */
         in_block = false;
         if (!final_seen) {
             const int status = block_status(block, block_len);

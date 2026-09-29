@@ -19,20 +19,9 @@
 #include "esp_log.h"
 #include <string.h>
 
+#include "ml_h2_frame.h"
+
 static const char *TAG = "ml_h2";
-
-/* HTTP/2 frame types */
-#define H2_FRAME_DATA           0x00
-#define H2_FRAME_HEADERS        0x01
-#define H2_FRAME_SETTINGS       0x04
-#define H2_FRAME_PING           0x06
-#define H2_FRAME_GOAWAY         0x07
-#define H2_FRAME_WINDOW_UPDATE  0x08
-
-/* HTTP/2 frame flags */
-#define H2_FLAG_END_STREAM      0x01
-#define H2_FLAG_END_HEADERS     0x04
-#define H2_FLAG_ACK             0x01
 
 /* HTTP/2 SETTINGS parameter IDs (RFC 7540 Section 6.5.2) */
 #define H2_SETTINGS_INITIAL_WINDOW_SIZE  0x04
