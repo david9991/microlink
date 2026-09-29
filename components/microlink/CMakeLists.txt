@@ -37,6 +37,11 @@ set(REQUIRES
     esp_http_server
 )
 
+# The DERP relay's certificate held to its CertName, against the bundle
+if(CONFIG_ML_DERP_VERIFY_CERT)
+    list(APPEND SRCS "src/ml_derp_cert.c")
+endif()
+
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS

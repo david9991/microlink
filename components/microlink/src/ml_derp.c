@@ -29,7 +29,7 @@
 #include "mbedtls/error.h"
 #ifdef CONFIG_ML_DERP_VERIFY_CERT
 #include "esp_crt_bundle.h"
-#include "mbedtls/x509_crt.h"
+#include "ml_derp_cert.h"
 #endif
 #include "nacl_box.h"
 #include <string.h>
@@ -40,26 +40,6 @@ static const char *TAG = "ml_derp";
 
 /* A DERP node's CertName that pins a self-signed certificate by its hash */
 #define DERP_CERT_PIN_PREFIX "sha256-raw:"
-
-#ifdef CONFIG_ML_DERP_VERIFY_CERT
-/* ESP-IDF's check of a certificate chain against its bundle, which
- * esp_crt_bundle_attach installs; esp_crt_bundle.c defines it, its header
- * does not declare it */
-extern int esp_crt_verify_callback(void *buf, mbedtls_x509_crt *crt, int depth, uint32_t *flags);
-
-/* The bundle's check, with the relay's certificate held to its CertName
- * (`ctx`) rather than to the HostName sent as its SNI */
-static int derp_verify_cert_name(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
-    const int ret = esp_crt_verify_callback(NULL, crt, depth, flags);
-    if (ret != 0 || depth != 0) return ret;
-    uint32_t name_flags = 0;
-    /* Only the name's verdict is taken from this: the chain is the bundle's */
-    (void)mbedtls_x509_crt_verify(crt, crt, NULL, (const char *)ctx, &name_flags, NULL, NULL);
-    *flags &= ~MBEDTLS_X509_BADCERT_CN_MISMATCH;
-    *flags |= name_flags & MBEDTLS_X509_BADCERT_CN_MISMATCH;
-    return 0;
-}
-#endif
 
 /* ============================================================================
  * Custom BIO callbacks for non-blocking TLS I/O
@@ -806,7 +786,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     /* The SNI is HostName (set below); a certificate for another name, its
      * CertName, is held to that name in place of HostName */
     if (strcmp(derp_cert, derp_host) != 0) {
-        mbedtls_ssl_conf_verify(&ml->derp.ssl_conf, derp_verify_cert_name, (void *)derp_cert);
+        mbedtls_ssl_conf_verify(&ml->derp.ssl_conf, ml_derp_verify_cert_name, (void *)derp_cert);
     }
 #else
     mbedtls_ssl_conf_authmode(&ml->derp.ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
