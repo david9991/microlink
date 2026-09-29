@@ -110,7 +110,7 @@ extern "C" {
 #define ML_CONNECT_TIMEOUT_MS           10000
 
 /* How long a Noise frame begun on the control connection may take to finish
- * arriving, past the socket's own timeout for the read under way */
+ * arriving, counted from its first byte: every read of it waits no longer */
 #define ML_PARTIAL_READ_MS              3000
 
 /* The longest auth key an instance keeps, its NUL included */
@@ -420,6 +420,7 @@ struct microlink_s {
 
     /* Coordination socket (owned exclusively by coord task) */
     int coord_sock;
+    uint32_t coord_rcvtimeo_ms;         /* coord_sock's receive timeout, outside a frame begun */
     uint32_t h2_next_stream_id;         /* Next H2 stream ID for endpoint updates (odd, starts at 7) */
 
     /* WireGuard netif (owned exclusively by wg_mgr task) */

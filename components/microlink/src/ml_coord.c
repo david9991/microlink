@@ -106,38 +106,82 @@ static int coord_send(microlink_t *ml, const uint8_t *data, size_t len) {
     return 0;
 }
 
-static int coord_recv(microlink_t *ml, uint8_t *buf, size_t len) {
+/* Set a socket's receive timeout; 0 ms would mean none, so at least 1 */
+static void sock_rcvtimeo(int sock, uint32_t ms) {
+    if (ms == 0) ms = 1;
+    struct timeval tv = { .tv_sec = ms / 1000, .tv_usec = (ms % 1000) * 1000 };
+    ml_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+/* Set the control socket's receive timeout, and keep it: coord_recv_by
+ * shortens it for a frame begun and then puts it back. */
+static void coord_rcvtimeo(microlink_t *ml, uint32_t ms) {
+    ml->coord_rcvtimeo_ms = ms;
+    sock_rcvtimeo(ml->coord_sock, ms);
+}
+
+/* Read exactly `len` bytes of a frame. *deadline is 0 until the frame has
+ * begun: then a read waits up to the socket's own timeout, and one that times
+ * out with nothing read fails with errno EAGAIN — nothing is lost, the caller
+ * may read again. From the first byte read (or a deadline the caller already
+ * set, for a frame whose start it read) the rest of the frame must arrive by
+ * *deadline, ML_PARTIAL_READ_MS after that byte: every read waits at most the
+ * time left, and the deadline and a stop are checked after each. A frame not
+ * finished by then, or at a stop, fails with ETIMEDOUT or ECANCELED — its
+ * stream is lost, and the caller must not read on. A closed connection fails
+ * with ECONNRESET. */
+static int coord_recv_by(microlink_t *ml, uint8_t *buf, size_t len, uint64_t *deadline) {
     size_t recvd = 0;
-    uint64_t partial_deadline = 0;  /* set once a first byte has been taken */
+    bool clamped = false;
+    int result = 0;
     while (recvd < len) {
-        int n = ml_recv(ml->coord_sock, buf + recvd, len - recvd, 0);
-        if (n <= 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                if (recvd == 0) {
-                    /* No data consumed yet — timeout is fine, caller can retry */
-                    return -1;
-                }
-                /* Partial data consumed — we MUST finish this read or the
-                 * Noise frame stream will be misaligned. Retry until the
-                 * deadline, or a stop. */
-                if (partial_deadline == 0) {
-                    partial_deadline = ml_get_time_ms() + ML_PARTIAL_READ_MS;
-                }
-                if (ml_get_time_ms() >= partial_deadline || ml_stopping(ml, 0)) {
-                    ESP_LOGE(TAG, "coord_recv partial timeout: %d/%d bytes",
-                             (int)recvd, (int)len);
-                    return -1;
-                }
-                vTaskDelay(pdMS_TO_TICKS(10));
-                continue;
+        if (*deadline != 0) {
+            const uint64_t now = ml_get_time_ms();
+            if (now >= *deadline || ml_stopping(ml, 0)) {
+                ESP_LOGE(TAG, "coord_recv: frame given up at %d/%d bytes (%s)", (int)recvd,
+                         (int)len, now >= *deadline ? "deadline" : "stop");
+                errno = now >= *deadline ? ETIMEDOUT : ECANCELED;
+                result = -1;
+                break;
             }
-            ESP_LOGE(TAG, "coord_recv failed: %d (errno %d, recvd %d/%d)",
-                     n, errno, (int)recvd, (int)len);
-            return -1;
+            const uint64_t left = *deadline - now;
+            sock_rcvtimeo(ml->coord_sock, left < ml->coord_rcvtimeo_ms
+                                              ? (uint32_t)left : ml->coord_rcvtimeo_ms);
+            clamped = true;
         }
-        recvd += n;
+        const int n = ml_recv(ml->coord_sock, buf + recvd, len - recvd, 0);
+        if (n > 0) {
+            recvd += n;
+            if (*deadline == 0) {
+                *deadline = ml_get_time_ms() + ML_PARTIAL_READ_MS;
+            }
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (*deadline == 0) {
+                result = -1;  /* nothing of the frame read: errno stays EAGAIN */
+                break;
+            }
+            continue;  /* the deadline, checked above, decides */
+        }
+        if (n == 0) errno = ECONNRESET;
+        ESP_LOGE(TAG, "coord_recv failed: %d (errno %d, recvd %d/%d)",
+                 n, errno, (int)recvd, (int)len);
+        result = -1;
+        break;
     }
-    return 0;
+    if (clamped) {
+        const int saved = errno;
+        sock_rcvtimeo(ml->coord_sock, ml->coord_rcvtimeo_ms);
+        errno = saved;
+    }
+    return result;
+}
+
+/* Read exactly `len` bytes, a frame of their own (see coord_recv_by) */
+static int coord_recv(microlink_t *ml, uint8_t *buf, size_t len) {
+    uint64_t deadline = 0;
+    return coord_recv_by(ml, buf, len, &deadline);
 }
 
 /* ============================================================================
@@ -172,36 +216,40 @@ static int noise_send(microlink_t *ml, ml_noise_state_t *noise,
 /* Receive and decrypt a Noise transport frame, returns plaintext length */
 static int noise_recv(microlink_t *ml, ml_noise_state_t *noise,
                         uint8_t *plaintext, size_t max_len) {
-    /* Read 3-byte frame header */
+    /* Read 3-byte frame header. From its first byte on, the header and the
+     * payload share one deadline: a frame begun is finished within
+     * ML_PARTIAL_READ_MS or given up, its stream lost. Only a read that took
+     * nothing fails with errno EAGAIN; every other failure sets an errno of
+     * its own, so a caller never reads on from a frame cut short. */
+    uint64_t deadline = 0;
     uint8_t hdr[3];
-    if (coord_recv(ml, hdr, 3) < 0) return -1;
+    if (coord_recv_by(ml, hdr, 3, &deadline) < 0) return -1;
 
     if (hdr[0] != 0x04) {
         ESP_LOGE(TAG, "Unexpected Noise frame type: 0x%02x", hdr[0]);
+        errno = EPROTO;
         return -1;
     }
 
     uint16_t ct_len = (hdr[1] << 8) | hdr[2];
-    if (ct_len < 16) return -1;
+    if (ct_len < 16) {
+        errno = EPROTO;
+        return -1;
+    }
     size_t pt_len = ct_len - 16;
     if (pt_len > max_len) {
         ESP_LOGE(TAG, "Noise frame too large: %d > %d", (int)pt_len, (int)max_len);
+        errno = EPROTO;
         return -1;
     }
 
     uint8_t *ciphertext = ml_psram_malloc(ct_len);
-    if (!ciphertext) return -1;
+    if (!ciphertext) {
+        errno = ENOMEM;
+        return -1;
+    }
 
-    /* Header already consumed — payload read MUST complete or stream
-     * alignment is permanently lost. Retry EAGAIN (coord_recv returns -1
-     * with errno==EAGAIN if recvd==0 on first byte). */
-    const uint64_t payload_deadline = ml_get_time_ms() + ML_PARTIAL_READ_MS;
-    while (coord_recv(ml, ciphertext, ct_len) < 0) {
-        if ((errno == EAGAIN || errno == EWOULDBLOCK) && ml_get_time_ms() < payload_deadline &&
-            !ml_stopping(ml, 0)) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
+    if (coord_recv_by(ml, ciphertext, ct_len, &deadline) < 0) {
         ESP_LOGE(TAG, "noise_recv payload failed: ct_len=%d errno=%d", ct_len, errno);
         free(ciphertext);
         return -1;
@@ -213,6 +261,7 @@ static int noise_recv(microlink_t *ml, ml_noise_state_t *noise,
                           plaintext) != ESP_OK) {
         ESP_LOGE(TAG, "Noise decrypt failed (nonce=%llu)", (unsigned long long)noise->rx_nonce);
         free(ciphertext);
+        errno = EPROTO;
         return -1;
     }
     noise->rx_nonce++;
@@ -253,6 +302,7 @@ static int do_tcp_connect(microlink_t *ml) {
                           .tv_usec = (ML_CONNECT_TIMEOUT_MS % 1000) * 1000 };
     ml_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     ml_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    ml->coord_rcvtimeo_ms = ML_CONNECT_TIMEOUT_MS;
 
     /* TCP keepalive (critical for NAT traversal) */
     int keepalive = 1;
@@ -470,8 +520,7 @@ static int do_noise_handshake(microlink_t *ml, ml_noise_state_t *noise) {
          * Server sends EarlyNoise immediately after msg2, so they should
          * arrive within a few hundred ms even on slow cellular links. */
         ESP_LOGI(TAG, "No extra data in initial buffer, reading proactive frames from socket...");
-        struct timeval short_tv = { .tv_sec = 2, .tv_usec = 0 };
-        ml_setsockopt(ml->coord_sock, SOL_SOCKET, SO_RCVTIMEO, &short_tv, sizeof(short_tv));
+        coord_rcvtimeo(ml, 2000);
 
         extra_data = ml_psram_malloc(1024);
         if (extra_data) {
@@ -488,8 +537,7 @@ static int do_noise_handshake(microlink_t *ml, ml_noise_state_t *noise) {
         }
 
         /* Restore normal recv timeout */
-        struct timeval normal_tv = { .tv_sec = 60, .tv_usec = 0 };
-        ml_setsockopt(ml->coord_sock, SOL_SOCKET, SO_RCVTIMEO, &normal_tv, sizeof(normal_tv));
+        coord_rcvtimeo(ml, 60000);
     }
 
     if (extra_data && extra_len > 0) {
@@ -1549,8 +1597,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     size_t json_total = 0;
 
     /* Set extended recv timeout for large MapResponse (60 seconds) */
-    struct timeval rcv_tv = { .tv_sec = 60, .tv_usec = 0 };
-    ml_setsockopt(ml->coord_sock, SOL_SOCKET, SO_RCVTIMEO, &rcv_tv, sizeof(rcv_tv));
+    coord_rcvtimeo(ml, 60000);
 
     uint64_t recv_start_ms = ml_get_time_ms();
     uint64_t last_progress_ms = recv_start_ms;
@@ -1633,8 +1680,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
 
     /* Restore normal recv timeout (5 seconds for long-poll) */
-    rcv_tv.tv_sec = 5;
-    ml_setsockopt(ml->coord_sock, SOL_SOCKET, SO_RCVTIMEO, &rcv_tv, sizeof(rcv_tv));
+    coord_rcvtimeo(ml, 5000);
 
     ESP_LOGI(TAG, "Accumulated %dKB of H2 data from Noise frames (%lums)",
              (int)(h2_total / 1024),
@@ -2136,8 +2182,7 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
     if (sel <= 0) return 0;  /* No data available or error */
 
     /* Data available — set short recv timeout for partial frame safety */
-    struct timeval tv_recv = { .tv_sec = 2, .tv_usec = 0 };
-    ml_setsockopt(ml->coord_sock, SOL_SOCKET, SO_RCVTIMEO, &tv_recv, sizeof(tv_recv));
+    coord_rcvtimeo(ml, 2000);
 
     uint8_t *frame_buf = ml_psram_malloc(65536);
     if (!frame_buf) return 0;
