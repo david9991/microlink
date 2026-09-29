@@ -6,7 +6,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 src="$here/../src"
 out="${TMPDIR:-/tmp}/microlink-host-tests"
 mkdir -p "$out"
-${CC:-cc} -std=c11 -Wall -Wextra -Werror -O2 \
-    -I "$here/stub" -I "$here/../include" -I "$src" \
-    "$src/ml_register.c" "$here/test_register.c" -o "$out/test_register"
-"$out/test_register"
+# Under AddressSanitizer and UndefinedBehaviorSanitizer: a read past a
+# buffer, an overflow or a bad shift fails the run, not only a wrong answer.
+cflags="-std=c11 -Wall -Wextra -Werror -O2 -g -fno-omit-frame-pointer \
+    -fsanitize=address,undefined -fno-sanitize-recover=all"
+build() {
+    name=$1
+    shift
+    # shellcheck disable=SC2086
+    ${CC:-cc} $cflags -I "$here/stub" -I "$here/../include" -I "$src" "$@" -o "$out/$name"
+    "$out/$name"
+}
+build test_register "$src/ml_register.c" "$here/test_register.c"
