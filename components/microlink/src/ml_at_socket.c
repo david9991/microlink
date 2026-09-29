@@ -1419,8 +1419,13 @@ int ml_at_getaddrinfo(const char *hostname, const char *service,
     }
 
     /* Second pass: no IPv4 found — try IPv6, unless IPv4 was asked for */
-    for (int i = 0; family == AF_UNSPEC && i < ip_count; i++) {
+    for (int i = 0; i < ip_count; i++) {
         if (inet_pton(AF_INET6, ips[i], &addr6) == 1) {
+            if (family == AF_INET) {
+                ESP_LOGW(TAG, "DNS: %s has no IPv4 address, only IPv6 (%s); IPv4 was asked for",
+                         hostname, ips[i]);
+                return EAI_NONAME;
+            }
             ESP_LOGI(TAG, "DNS: %s -> %s (IPv6)", hostname, ips[i]);
             return addrinfo_in6(&addr6, service, hints, res);
         }
