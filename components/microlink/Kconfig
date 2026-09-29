@@ -61,8 +61,9 @@ menu "MicroLink V2 Configuration"
             Check the DERP relay's certificate, and its name, against
             ESP-IDF's certificate bundle (MBEDTLS_CERTIFICATE_BUNDLE). The
             name is the DERP map node's CertName when it gives one, else its
-            HostName, which may be an IP address; a node's IPv4, when given,
-            is dialled in place of its HostName. A node whose CertName pins
+            HostName, which may be an IP address; HostName is always the
+            SNI. A node's IPv4, when given, is dialled in place of its
+            HostName, and "none" dials IPv6 only. A node whose CertName pins
             a self-signed certificate by its hash ("sha256-raw:") is not
             used. Tailscale's relays are publicly trusted. Turn this off only for
             a relay whose certificate no public authority signed; the

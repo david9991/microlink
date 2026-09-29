@@ -29,6 +29,7 @@
 #include "mbedtls/error.h"
 #ifdef CONFIG_ML_DERP_VERIFY_CERT
 #include "esp_crt_bundle.h"
+#include "mbedtls/x509_crt.h"
 #endif
 #include "nacl_box.h"
 #include <string.h>
@@ -36,6 +37,35 @@
 #include <fcntl.h>
 
 static const char *TAG = "ml_derp";
+
+/* A DERP node's CertName that pins a self-signed certificate by its hash */
+#define DERP_CERT_PIN_PREFIX "sha256-raw:"
+
+/* A DERP node's IPv4 or IPv6 given as an address to dial: not empty, and not
+ * "none" (that family is not to be used at all) */
+static bool derp_addr_given(const char *addr) {
+    return addr[0] != '\0' && strcmp(addr, "none") != 0;
+}
+
+#ifdef CONFIG_ML_DERP_VERIFY_CERT
+/* ESP-IDF's check of a certificate chain against its bundle, which
+ * esp_crt_bundle_attach installs; esp_crt_bundle.c defines it, its header
+ * does not declare it */
+extern int esp_crt_verify_callback(void *buf, mbedtls_x509_crt *crt, int depth, uint32_t *flags);
+
+/* The bundle's check, with the relay's certificate held to its CertName
+ * (`ctx`) rather than to the HostName sent as its SNI */
+static int derp_verify_cert_name(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
+    const int ret = esp_crt_verify_callback(NULL, crt, depth, flags);
+    if (ret != 0 || depth != 0) return ret;
+    uint32_t name_flags = 0;
+    /* Only the name's verdict is taken from this: the chain is the bundle's */
+    (void)mbedtls_x509_crt_verify(crt, crt, NULL, (const char *)ctx, &name_flags, NULL, NULL);
+    *flags &= ~MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    *flags |= name_flags & MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    return 0;
+}
+#endif
 
 /* ============================================================================
  * Custom BIO callbacks for non-blocking TLS I/O
@@ -664,8 +694,9 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
      * Always start from node 0 (the first/preferred node in the DERPMap).
      * Only rotate to a different node after a SUCCESSFUL connection drops,
      * NOT on connection failure (to avoid bouncing between nodes). */
-    const char *derp_host = ML_DERP_HOST;  /* its name, in the upgrade's Host */
+    const char *derp_host = ML_DERP_HOST;  /* its name: the SNI, and the upgrade's Host */
     const char *derp_dial = ML_DERP_HOST;  /* what is dialled */
+    int derp_family = AF_UNSPEC;           /* the address family dialled */
     const char *derp_cert = ML_DERP_HOST;  /* the name its certificate must be for */
     int derp_port = ML_DERP_PORT;
 
@@ -675,17 +706,26 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
                 /* Always use the first non-stun-only node (preferred node).
                  * This ensures we connect to the same node as most peers. */
                 for (int attempt = 0; attempt < ml->derp_regions[i].node_count; attempt++) {
-                    if (!ml->derp_regions[i].nodes[attempt].stun_only &&
-                        ml->derp_regions[i].nodes[attempt].hostname[0]) {
-                        const ml_derp_node_t *node = &ml->derp_regions[i].nodes[attempt];
-                        /* A node's IPv4, when the map gives one, is dialled
-                         * in place of its HostName ("none": not at all);
-                         * its certificate is for CertName, when given, else
-                         * for HostName (an IP literal among them) */
+                    const ml_derp_node_t *node = &ml->derp_regions[i].nodes[attempt];
+                    /* A node with both families "none" cannot be dialled */
+                    if (!node->stun_only && node->hostname[0] &&
+                        !(strcmp(node->ipv4, "none") == 0 && strcmp(node->ipv6, "none") == 0)) {
+                        /* An IPv4 the map gives is dialled in place of
+                         * HostName; with IPv4 "none", an IPv6 given, else
+                         * HostName's IPv6 addresses only — never its IPv4.
+                         * Its certificate is for CertName, when given, else
+                         * for HostName (an IP literal among them). */
                         derp_host = node->hostname;
-                        derp_dial = node->ipv4[0] && strcmp(node->ipv4, "none") != 0
-                                        ? node->ipv4 : node->hostname;
                         derp_cert = node->cert_name[0] ? node->cert_name : node->hostname;
+                        if (derp_addr_given(node->ipv4)) {
+                            derp_dial = node->ipv4;
+                            derp_family = AF_INET;
+                        } else if (strcmp(node->ipv4, "none") == 0) {
+                            derp_dial = derp_addr_given(node->ipv6) ? node->ipv6 : node->hostname;
+                            derp_family = AF_INET6;
+                        } else {
+                            derp_dial = node->hostname;
+                        }
                         if (ml->derp_regions[i].nodes[attempt].derp_port > 0) {
                             derp_port = ml->derp_regions[i].nodes[attempt].derp_port;
                         }
@@ -703,7 +743,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
              derp_host, derp_port, ml->derp_home_region ? ml->derp_home_region : ML_DERP_REGION);
 
     /* DNS resolve — accept IPv4 or IPv6 (carrier may be IPv6-only) */
-    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+    struct addrinfo hints = { .ai_family = derp_family, .ai_socktype = SOCK_STREAM };
     struct addrinfo *res = NULL;
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", derp_port);
@@ -763,7 +803,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     /* The relay's certificate and name, against ESP-IDF's bundle. A CertName
      * that pins a self-signed certificate by its hash cannot be verified so:
      * such a relay is not used. */
-    if (strncmp(derp_cert, "sha256-raw:", 11) == 0) {
+    if (strncmp(derp_cert, DERP_CERT_PIN_PREFIX, strlen(DERP_CERT_PIN_PREFIX)) == 0) {
         ESP_LOGE(TAG, "DERP %s: a pinned self-signed certificate (%s) is not supported",
                  derp_host, derp_cert);
         derp_release(ml);
@@ -775,6 +815,11 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         derp_release(ml);
         return ESP_FAIL;
     }
+    /* The SNI is HostName (set below); a certificate for another name, its
+     * CertName, is held to that name in place of HostName */
+    if (strcmp(derp_cert, derp_host) != 0) {
+        mbedtls_ssl_conf_verify(&ml->derp.ssl_conf, derp_verify_cert_name, (void *)derp_cert);
+    }
 #else
     mbedtls_ssl_conf_authmode(&ml->derp.ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
 #endif
@@ -782,9 +827,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     mbedtls_ssl_conf_read_timeout(&ml->derp.ssl_conf, ML_CONNECT_TIMEOUT_MS);
 
     if (mbedtls_ssl_setup(&ml->derp.ssl, &ml->derp.ssl_conf) != 0 ||
-        mbedtls_ssl_set_hostname(&ml->derp.ssl,
-                                 strncmp(derp_cert, "sha256-raw:", 11) == 0 ? derp_host
-                                                                            : derp_cert) != 0) {
+        mbedtls_ssl_set_hostname(&ml->derp.ssl, derp_host) != 0) {
         ESP_LOGE(TAG, "TLS setup failed");
         derp_release(ml);
         return ESP_FAIL;
