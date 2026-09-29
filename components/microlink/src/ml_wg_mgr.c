@@ -323,10 +323,13 @@ static esp_err_t wg_init_interface(microlink_t *ml) {
     IP4_ADDR(&netif->netmask.u_addr.ip4, 255, 192, 0, 0);     /* /10 */
     IP4_ADDR(&netif->gw.u_addr.ip4, 0, 0, 0, 0);
 
-    /* Use tcpip_input so decrypted packets are posted to the TCPIP thread.
-     * Required for TCP (esp_http_server sockets) — ip_input from the wg_mgr
-     * thread accesses TCP PCB state without synchronization.  The WG output
-     * callback uses raw udp_sendto (not BSD sendto) to avoid deadlock. */
+    /* netif->input for anything that hands the netif a packet through lwIP.
+     * WireGuard's receive path does not: it calls ip_input directly, so IP
+     * and TCP input run inline in the task that called
+     * wireguardif_network_rx — lwIP's thread on the zero-copy path, the WG
+     * manager's otherwise, which therefore calls it under lwIP's core lock.
+     * The WG output callback uses raw udp_sendto (not BSD sendto) to avoid
+     * deadlock. */
     netif->input = tcpip_input;
 
     /* Add to lwIP netif list (bypass netif_add which wants init callback) and
@@ -1253,10 +1256,9 @@ static void process_wg_packet(microlink_t *ml, const ml_rx_packet_t *pkt) {
     }
 
     /* Allocate PBUF_RAM and copy data so the pbuf OWNS its data.
-     * This is required because wireguardif decrypts in-place and then
-     * calls ip_input → tcpip_input which posts to the TCPIP thread.
-     * With PBUF_REF the backing data would be freed before the TCPIP
-     * thread processes the packet. */
+     * wireguardif decrypts in place and then calls ip_input directly: IP and
+     * TCP input run inline, here in the WG manager's task, and lwIP may keep
+     * the pbuf (a TCP segment queued out of order, say) past this call. */
     struct pbuf *p = pbuf_alloc(PBUF_RAW, pkt->len, PBUF_RAM);
     if (!p) {
         free(pkt->data);
@@ -1274,8 +1276,9 @@ static void process_wg_packet(microlink_t *ml, const ml_rx_packet_t *pkt) {
         ip4_addr_set_u32(ip_2_ip4(&addr), htonl(pkt->src_ip));
     }
 
-    /* Call WG RX handler — pbuf is PBUF_RAM so data survives async delivery.
-     * Under lwIP's core lock: the zero-copy path runs it on lwIP's thread. */
+    /* Call WG RX handler — pbuf is PBUF_RAM so lwIP may keep it. Under
+     * lwIP's core lock: it runs IP and TCP input inline (ip_input), and the
+     * zero-copy path runs it on lwIP's thread. */
     ML_LWIP_LOCKED(wireguardif_network_rx(device, NULL, p, &addr, pkt->src_port));
 }
 

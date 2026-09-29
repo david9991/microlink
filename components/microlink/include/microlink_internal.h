@@ -473,20 +473,16 @@ static inline bool ml_stopping(microlink_t *ml, uint32_t ms) {
 
 /* lwIP's core lock, around what MicroLink's own tasks do with lwIP's raw API
  * (udp_*, a netif's fields) and with the WireGuard device, which lwIP's
- * thread touches too (its output, and the zero-copy receive path). Taken
- * only when the calling task does not hold it already — lwIP's own thread,
- * in a callback — so a locked call may nest in another: pass what
- * ml_lwip_lock returned to ml_lwip_unlock. Never make a BSD socket call or
- * a tcpip_callback/tcpip_api_call wait with it held: they take it too.
+ * thread touches too (its output, and the zero-copy receive path). A packet
+ * WireGuard decrypts goes to ip_input directly, so IP and TCP input run
+ * inline in whichever task handed the packet to WireGuard — the WG manager's
+ * among them — and need the lock as much as the device does. Taken only
+ * when the calling task does not hold it already — lwIP's own thread, in a
+ * callback — so a locked call may nest in another: pass what ml_lwip_lock
+ * returned to ml_lwip_unlock. Never make a BSD socket call or a
+ * tcpip_callback/tcpip_api_call wait with it held: they take it too.
  * Without CONFIG_LWIP_TCPIP_CORE_LOCKING there is no such lock, and both do
  * nothing. */
-/* A packet WireGuard decrypts goes to tcpip_input with the core lock held
- * (on lwIP's thread, or under ml_lwip_lock): with core-locked input,
- * tcpip_input would take the lock again, and it does not nest. */
-#if LWIP_TCPIP_CORE_LOCKING_INPUT
-#error "MicroLink: CONFIG_LWIP_TCPIP_CORE_LOCKING_INPUT must be off"
-#endif
-
 static inline bool ml_lwip_lock(void) {
 #if LWIP_TCPIP_CORE_LOCKING
     if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) return false;
