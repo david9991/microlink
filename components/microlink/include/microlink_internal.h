@@ -331,6 +331,7 @@ typedef struct {
 
 typedef struct {
     int sockfd;                     /* Raw TCP socket */
+    bool tls_ready;                 /* the TLS contexts below are set up, and must be freed */
     mbedtls_ssl_context ssl;        /* TLS context (owned exclusively by DERP I/O task) */
     mbedtls_ssl_config ssl_conf;
     mbedtls_entropy_context entropy;
