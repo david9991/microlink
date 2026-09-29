@@ -196,7 +196,9 @@ static err_t wg_udp_output_cb(uint32_t dest_ip, uint16_t dest_port,
              (int)dest_port,
              len >= 1 ? data[0] : -1);
 
-    /* Use raw PCB to send — safe from any thread context */
+    /* Use raw PCB to send, under lwIP's core lock: on lwIP's thread it is
+     * held already; from the WG manager's task it is taken here, or by the
+     * locked call this output came from */
     if (!s_wg_output_pcb) return ERR_CONN;
 
     struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
@@ -207,7 +209,8 @@ static err_t wg_udp_output_cb(uint32_t dest_ip, uint16_t dest_port,
     IP_SET_TYPE_VAL(dst, IPADDR_TYPE_V4);
     ip4_addr_set_u32(ip_2_ip4(&dst), dest_ip);  /* already network byte order */
 
-    err_t err = udp_sendto(s_wg_output_pcb, p, &dst, dest_port);
+    err_t err;
+    ML_LWIP_LOCKED(err = udp_sendto(s_wg_output_pcb, p, &dst, dest_port));
     pbuf_free(p);
     return err;
 }
@@ -216,14 +219,15 @@ static err_t wg_udp_output_cb(uint32_t dest_ip, uint16_t dest_port,
  * WireGuard Interface Initialization
  * ========================================================================== */
 
-/* The WireGuard netif, handed to lwIP's thread */
+/* The WireGuard netif, handed to lwIP (tcpip_api_call: on lwIP's thread, or
+ * with core locking in the caller's task under lwIP's core lock) */
 struct wg_netif_call {
     struct tcpip_api_call_data call;
     microlink_t *ml;
     struct netif *netif;
 };
 
-/* On lwIP's thread: link the netif into lwIP's list and bring it up. */
+/* In lwIP's context: link the netif into lwIP's list and bring it up. */
 static err_t wg_netif_link(struct tcpip_api_call_data *call) {
     struct netif *netif = ((struct wg_netif_call *)call)->netif;
     netif->next = netif_list;
@@ -233,10 +237,10 @@ static err_t wg_netif_link(struct tcpip_api_call_data *call) {
     return ERR_OK;
 }
 
-/* On lwIP's thread: take the netif down and out of lwIP's list, and free the
- * WireGuard device behind it. The zero-copy receive callback, which runs on
- * this thread too, is unregistered and ml->wg_netif cleared first, so no
- * packet is handed to the netif from here on; the caller frees the netif
+/* In lwIP's context: take the netif down and out of lwIP's list, and free
+ * the WireGuard device behind it. The zero-copy receive callback, which runs
+ * in lwIP's context too, is unregistered and ml->wg_netif cleared first, so
+ * no packet is handed to the netif from here on; the caller frees the netif
  * once this has returned. */
 static err_t wg_netif_unlink(struct tcpip_api_call_data *call) {
     struct wg_netif_call *c = (struct wg_netif_call *)call;
@@ -305,14 +309,17 @@ static esp_err_t wg_init_interface(microlink_t *ml) {
     netif->input = tcpip_input;
 
     /* Add to lwIP netif list (bypass netif_add which wants init callback) and
-     * bring it up — on lwIP's thread, which owns the list */
+     * bring it up — in lwIP's context, which owns the list */
     struct wg_netif_call link = {.ml = ml, .netif = netif};
     tcpip_api_call(wg_netif_link, &link.call);
 
     /* Create raw UDP PCB for WG output (avoids BSD sendto deadlock on TCPIP
      * thread).  Bind to port 51820 to match the DISCO socket source port.
      * The existing BSD disco_sock4 is only used from the wg_mgr task for
-     * DISCO/STUN; this raw PCB is used from the TCPIP thread for WG output. */
+     * DISCO/STUN; this raw PCB is used from the TCPIP thread for WG output.
+     * The netif is linked and up: from here on lwIP's thread may use the
+     * device, so it is set up under lwIP's core lock. */
+    const bool lwip_taken = ml_lwip_lock();
     if (!s_wg_output_pcb) {
         s_wg_output_pcb = udp_new();
         if (s_wg_output_pcb) {
@@ -344,6 +351,7 @@ static esp_err_t wg_init_interface(microlink_t *ml) {
         }
     }
 #endif
+    ml_lwip_unlock(lwip_taken);
 
     ml->wg_netif = netif;
 
@@ -375,7 +383,7 @@ static void wg_update_vpn_ip(microlink_t *ml) {
         uint8_t b = (ml->vpn_ip >> 16) & 0xFF;
         uint8_t c = (ml->vpn_ip >> 8) & 0xFF;
         uint8_t d = ml->vpn_ip & 0xFF;
-        IP4_ADDR(&netif->ip_addr.u_addr.ip4, a, b, c, d);
+        ML_LWIP_LOCKED(IP4_ADDR(&netif->ip_addr.u_addr.ip4, a, b, c, d));
     }
 }
 
@@ -453,8 +461,8 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
                 ESP_LOGW(TAG, "Evicting LRU peer %s (%s) for priority peer %s",
                          ml->peers[evict_idx].hostname, evict_ip, update->hostname);
                 if (ml->peers[evict_idx].wg_peer_index >= 0 && ml->wg_netif) {
-                    wireguardif_remove_peer((struct netif *)ml->wg_netif,
-                                            ml->peers[evict_idx].wg_peer_index);
+                    ML_LWIP_LOCKED(wireguardif_remove_peer((struct netif *)ml->wg_netif,
+                                                           ml->peers[evict_idx].wg_peer_index));
                 }
                 ml->peers[evict_idx].active = false;
                 idx = evict_idx;
@@ -551,7 +559,8 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         wg_peer.keep_alive = 25;
 
         u8_t wg_peer_idx = WIREGUARDIF_INVALID_INDEX;
-        err_t wg_err = wireguardif_add_peer(netif, &wg_peer, &wg_peer_idx);
+        err_t wg_err;
+        ML_LWIP_LOCKED(wg_err = wireguardif_add_peer(netif, &wg_peer, &wg_peer_idx));
 
         if (wg_err == ERR_OK && wg_peer_idx != WIREGUARDIF_INVALID_INDEX) {
             p->wg_peer_index = wg_peer_idx;
@@ -631,7 +640,7 @@ static void unlink_peer(void *ctx, int idx) {
     /* Remove from wireguard-lwip */
     if (ml->wg_netif && ml->peers[idx].wg_peer_index >= 0) {
         struct netif *netif = (struct netif *)ml->wg_netif;
-        wireguardif_remove_peer(netif, (u8_t)ml->peers[idx].wg_peer_index);
+        ML_LWIP_LOCKED(wireguardif_remove_peer(netif, (u8_t)ml->peers[idx].wg_peer_index));
     }
 
     char ip_str[16];
@@ -988,6 +997,8 @@ static void process_disco_pong(microlink_t *ml, const ml_rx_packet_t *pkt,
                 ip_addr_t ep_ip;
                 IP_SET_TYPE_VAL(ep_ip, IPADDR_TYPE_V4);
                 ip4_addr_set_u32(ip_2_ip4(&ep_ip), htonl(pkt->src_ip));
+                /* The device is lwIP's thread's too: under its core lock */
+                const bool lwip_taken = ml_lwip_lock();
                 wireguardif_update_endpoint(netif, (u8_t)p->wg_peer_index,
                                              &ep_ip, pkt->src_port);
 
@@ -1042,6 +1053,7 @@ static void process_disco_pong(microlink_t *ml, const ml_rx_packet_t *pkt,
                         ESP_LOGI(TAG, "WG one-shot handshake to %s (first direct path)", p->hostname);
                     }
                 }
+                ml_lwip_unlock(lwip_taken);
             }
         }
 
@@ -1235,8 +1247,9 @@ static void process_wg_packet(microlink_t *ml, const ml_rx_packet_t *pkt) {
         ip4_addr_set_u32(ip_2_ip4(&addr), htonl(pkt->src_ip));
     }
 
-    /* Call WG RX handler — pbuf is PBUF_RAM so data survives async delivery */
-    wireguardif_network_rx(device, NULL, p, &addr, pkt->src_port);
+    /* Call WG RX handler — pbuf is PBUF_RAM so data survives async delivery.
+     * Under lwIP's core lock: the zero-copy path runs it on lwIP's thread. */
+    ML_LWIP_LOCKED(wireguardif_network_rx(device, NULL, p, &addr, pkt->src_port));
 }
 
 /* ============================================================================
@@ -1380,8 +1393,12 @@ esp_err_t ml_wg_mgr_trigger_handshake(microlink_t *ml, uint32_t dest_vpn_ip) {
     struct netif *netif = (struct netif *)ml->wg_netif;
 
     /* Don't destroy an existing valid session */
+    const bool lwip_taken = ml_lwip_lock();
     err_t is_up = wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index, NULL, NULL);
-    if (is_up == ERR_OK) return ESP_OK;
+    if (is_up == ERR_OK) {
+        ml_lwip_unlock(lwip_taken);
+        return ESP_OK;
+    }
 
     /* Path 1: DERP (reliable fallback) */
     wireguardif_connect_derp(netif, (u8_t)p->wg_peer_index);
@@ -1404,6 +1421,7 @@ esp_err_t ml_wg_mgr_trigger_handshake(microlink_t *ml, uint32_t dest_vpn_ip) {
                  (int)((p->best_ip >> 8) & 0xFF), (int)(p->best_ip & 0xFF),
                  (int)p->best_port);
     }
+    ml_lwip_unlock(lwip_taken);
 
     return ESP_OK;
 }
@@ -1417,6 +1435,7 @@ bool ml_wg_mgr_peer_is_up(microlink_t *ml, uint32_t vpn_ip) {
     struct netif *netif = (struct netif *)ml->wg_netif;
     ip_addr_t cur_ip;
     u16_t cur_port;
+    const bool lwip_taken = ml_lwip_lock();
     bool up = wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index, &cur_ip, &cur_port) == ERR_OK;
     if (up) {
         /* Verify WG internal peer key matches our DISCO peer */
@@ -1433,6 +1452,7 @@ bool ml_wg_mgr_peer_is_up(microlink_t *ml, uint32_t vpn_ip) {
                      key_match ? "KEY_OK" : "KEY_MISMATCH!");
         }
     }
+    ml_lwip_unlock(lwip_taken);
     return up;
 }
 
@@ -1441,7 +1461,7 @@ void ml_wg_mgr_update_transport(microlink_t *ml) {
     if (!ml || !ml->wg_netif) return;
     struct netif *netif = (struct netif *)ml->wg_netif;
     bool at_ready = ml_at_socket_is_ready();
-    wireguardif_force_derp_output(netif, at_ready);
+    ML_LWIP_LOCKED(wireguardif_force_derp_output(netif, at_ready));
     ESP_LOGI(TAG, "WG transport updated: force_derp=%d (%s)",
              at_ready, at_ready ? "AT socket" : "PPP/WiFi");
 #else
@@ -1489,12 +1509,14 @@ static void disco_periodic_probes(microlink_t *ml) {
                 /* Re-initiate DERP handshake only if we have an active WG session. */
                 if (ml->wg_netif && p->wg_peer_index >= 0) {
                     struct netif *netif = (struct netif *)ml->wg_netif;
+                    const bool lwip_taken = ml_lwip_lock();
                     err_t is_up = wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index,
                                                            NULL, NULL);
                     if (is_up == ERR_OK) {
                         wireguardif_connect_derp(netif, (u8_t)p->wg_peer_index);
                         ESP_LOGI(TAG, "  WG session active, falling back to DERP for %s", p->hostname);
                     }
+                    ml_lwip_unlock(lwip_taken);
                 }
 
                 /* Force-ping to try re-establishing direct path (WiFi only) */
@@ -1670,7 +1692,7 @@ void ml_wg_mgr_task(void *arg) {
         uint64_t now = ml_get_time_ms();
         if (ml->wg_netif && now - last_wg_periodic_ms >= 400) {
             uint64_t t0 = now;
-            wireguardif_periodic((struct netif *)ml->wg_netif);
+            ML_LWIP_LOCKED(wireguardif_periodic((struct netif *)ml->wg_netif));
             uint64_t dt = ml_get_time_ms() - t0;
             last_wg_periodic_ms = now;
             ESP_LOGI(TAG, "wireguardif_periodic: %llu ms", (unsigned long long)dt);
@@ -1691,9 +1713,9 @@ void ml_wg_mgr_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    /* Shutdown WireGuard interface: on lwIP's thread, which owns the netif
+    /* Shutdown WireGuard interface: in lwIP's context, which owns the netif
      * list and the device's timer and socket, and clears ml->wg_netif; then
-     * the netif itself, which nothing on that thread can reach any more */
+     * the netif itself, which nothing in that context can reach any more */
     if (ml->wg_netif) {
         struct wg_netif_call unlink = {.ml = ml, .netif = (struct netif *)ml->wg_netif};
         tcpip_api_call(wg_netif_unlink, &unlink.call);

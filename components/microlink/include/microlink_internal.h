@@ -28,6 +28,7 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "esp_heap_caps.h"
+#include "lwip/tcpip.h"
 #include <string.h>
 
 #ifdef CONFIG_ML_ZERO_COPY_WG
@@ -468,6 +469,41 @@ static inline bool ml_stopping(microlink_t *ml, uint32_t ms) {
     return (xEventGroupWaitBits(ml->events, ML_EVT_SHUTDOWN_REQUEST, pdFALSE, pdFALSE,
                                 pdMS_TO_TICKS(ms)) & ML_EVT_SHUTDOWN_REQUEST) != 0;
 }
+
+/* lwIP's core lock, around what MicroLink's own tasks do with lwIP's raw API
+ * (udp_*, a netif's fields) and with the WireGuard device, which lwIP's
+ * thread touches too (its output, and the zero-copy receive path). Taken
+ * only when the calling task does not hold it already — lwIP's own thread,
+ * in a callback — so a locked call may nest in another: pass what
+ * ml_lwip_lock returned to ml_lwip_unlock. Never make a BSD socket call or
+ * a tcpip_callback/tcpip_api_call wait with it held: they take it too.
+ * Without CONFIG_LWIP_TCPIP_CORE_LOCKING there is no such lock, and both do
+ * nothing. */
+static inline bool ml_lwip_lock(void) {
+#if LWIP_TCPIP_CORE_LOCKING
+    if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) return false;
+    LOCK_TCPIP_CORE();
+    return true;
+#else
+    return false;
+#endif
+}
+
+static inline void ml_lwip_unlock(bool taken) {
+#if LWIP_TCPIP_CORE_LOCKING
+    if (taken) UNLOCK_TCPIP_CORE();
+#else
+    (void)taken;
+#endif
+}
+
+/* Run the statements with lwIP's core lock held (see ml_lwip_lock) */
+#define ML_LWIP_LOCKED(...)                        \
+    do {                                           \
+        const bool ml_lwip_taken_ = ml_lwip_lock(); \
+        __VA_ARGS__;                               \
+        ml_lwip_unlock(ml_lwip_taken_);            \
+    } while (0)
 
 /* The end of every task: tell stop this one is gone, then delete it. Nothing
  * of `ml` is touched after the give — stop may free it at once. */
