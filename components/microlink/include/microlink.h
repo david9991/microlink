@@ -295,13 +295,17 @@ const char *microlink_imei_device_name(void);
 /**
  * @brief Resolve a tailnet hostname to its VPN IP
  * @param ml Handle
- * @param hostname Short name ("npc1") or FQDN ("npc1.tail12345.ts.net")
+ * @param hostname Short name ("npc1") or FQDN ("npc1.tail12345.ts.net"),
+ *        with no trailing dot
  * @return VPN IP in host byte order, 0 if not found
  *
- * Matching rules (in order):
- * 1. Exact match against full peer hostname
- * 2. Prefix match: "npc1" matches "npc1.tail12345.ts.net"
- * 3. Case-insensitive on all matches
+ * The rule is ml_peers_resolve's (ml_peer_table.h). In short, any case: a
+ * peer's full name always resolves; its first label ("npc1") only when the
+ * rest of its name is the board's own tailnet domain, so a node shared in
+ * from another tailnet is found by its full name alone, and before the
+ * board's domain is known no first label resolves. A peer's name with no
+ * domain ("npc1") never resolves, nor does a peer cached in NVS or one
+ * whose name was cut to fit: their names could stand for another node.
  *
  * Waits on nothing but the peer table's own lock, held only for the lookup:
  * it may be called with lwIP's core lock held (from an lwIP DNS hook, say).
