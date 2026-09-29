@@ -35,6 +35,7 @@
 #include "mbedtls/platform_util.h"
 #include "ml_register.h"
 #include "ml_frame_read.h"
+#include "ml_h2_frame.h"
 #include <string.h>
 #include <errno.h>
 
@@ -1673,7 +1674,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         /* Scan newly accumulated data for H2 END_STREAM flag: a walk of its
          * own, not ml_h2_read_response's (see ml_register.h).
          * H2 frame header: 3 bytes length + 1 byte type + 1 byte flags + 4 bytes stream ID.
-         * DATA frame type=0x00, END_STREAM flag=0x01.
+         * The response is complete at a DATA frame that carries END_STREAM.
          * We scan from the start each time since frames may span Noise boundaries. */
         size_t scan_pos = 0;
         while (scan_pos + 9 <= h2_total) {
@@ -1683,7 +1684,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
 
             if (scan_pos + 9 + f_len > h2_total) break;  /* Incomplete frame */
 
-            if (f_type == 0x00 && (f_flags & 0x01)) {
+            if (f_type == H2_FRAME_DATA && (f_flags & H2_FLAG_END_STREAM)) {
                 /* DATA frame with END_STREAM — response is complete */
                 got_end_stream = true;
             }
@@ -1748,7 +1749,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             break;
         }
 
-        if (f_type == 0x00 && f_len > 0) {  /* DATA frame */
+        if (f_type == H2_FRAME_DATA && f_len > 0) {
             if (json_total + f_len < ML_JSON_BUFFER_SIZE) {
                 memcpy(resp_buf + json_total, h2_recv + fpos, f_len);
                 json_total += f_len;
@@ -2263,7 +2264,7 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
 
         if (pos + (int)f_len > frame_len) break;
 
-        if (f_type == 0x00) {  /* DATA frame */
+        if (f_type == H2_FRAME_DATA) {
             total_data_bytes += f_len;
             if (f_stream == 5) {
                 /* Long-poll MapResponse data (stream 5) — parse as JSON */
@@ -2277,18 +2278,18 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
                 ESP_LOGD(TAG, "H2 stream %lu DATA: %lu bytes (discarded)",
                          (unsigned long)f_stream, (unsigned long)f_len);
             }
-        } else if (f_type == 0x06 && f_len == 8 && !(f_flags & 0x01)) {
+        } else if (f_type == H2_FRAME_PING && f_len == 8 && !(f_flags & H2_FLAG_ACK)) {
             /* HTTP/2 PING from server — respond with PONG (same payload, ACK flag) */
             uint8_t pong[17];
             pong[0] = 0x00; pong[1] = 0x00; pong[2] = 0x08;
-            pong[3] = 0x06; pong[4] = 0x01;
+            pong[3] = H2_FRAME_PING; pong[4] = H2_FLAG_ACK;
             pong[5] = 0x00; pong[6] = 0x00; pong[7] = 0x00; pong[8] = 0x00;
             memcpy(pong + 9, frame_buf + pos, 8);
             noise_send(ml, noise, pong, sizeof(pong));
             ESP_LOGI(TAG, "Sent HTTP/2 PONG in response to server PING");
-        } else if (f_type == 0x04 && !(f_flags & 0x01)) {
+        } else if (f_type == H2_FRAME_SETTINGS && !(f_flags & H2_FLAG_ACK)) {
             /* HTTP/2 SETTINGS from server — respond with SETTINGS ACK */
-            uint8_t settings_ack[9] = {0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00};
+            uint8_t settings_ack[9] = {0x00, 0x00, 0x00, H2_FRAME_SETTINGS, H2_FLAG_ACK, 0x00, 0x00, 0x00, 0x00};
             noise_send(ml, noise, settings_ack, sizeof(settings_ack));
         }
         pos += f_len;
