@@ -18,3 +18,4 @@ build() {
     "$out/$name"
 }
 build test_register "$src/ml_register.c" "$here/test_register.c"
+build test_peer_table "$src/ml_peer_table.c" "$here/test_peer_table.c"

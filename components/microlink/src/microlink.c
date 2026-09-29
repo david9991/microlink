@@ -885,47 +885,10 @@ uint64_t ml_get_time_ms(void) {
 }
 
 /* ============================================================================
- * MagicDNS — Resolve tailnet hostnames against peer list
+ * MagicDNS — Resolve tailnet hostnames against peer list (ml_peer_table.c)
  * ========================================================================== */
 
-/* Case-insensitive string compare (limited to len bytes) */
-static int strncasecmp_local(const char *a, const char *b, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        char ca = a[i], cb = b[i];
-        if (ca >= 'A' && ca <= 'Z') ca += 32;
-        if (cb >= 'A' && cb <= 'Z') cb += 32;
-        if (ca != cb) return ca - cb;
-        if (ca == '\0') return 0;
-    }
-    return 0;
-}
-
 uint32_t microlink_resolve(const microlink_t *ml, const char *hostname) {
-    if (!ml || !hostname || hostname[0] == '\0') return 0;
-
-    size_t query_len = strlen(hostname);
-
-    for (int i = 0; i < ml->peer_count; i++) {
-        const ml_peer_t *p = &ml->peers[i];
-        /* A cached peer's name is cut: it could stand for another peer */
-        if (!p->active || p->cached || p->hostname[0] == '\0') continue;
-
-        /* 1. Exact match (case-insensitive) */
-        if (strncasecmp_local(p->hostname, hostname, sizeof(p->hostname)) == 0) {
-            return p->vpn_ip;
-        }
-
-        /* 2. Prefix match: query "npc1" matches peer "npc1.tail12345.ts.net"
-         * The query must match up to the first '.' in the peer hostname. */
-        const char *dot = strchr(p->hostname, '.');
-        if (dot) {
-            size_t short_len = (size_t)(dot - p->hostname);
-            if (query_len == short_len &&
-                strncasecmp_local(p->hostname, hostname, short_len) == 0) {
-                return p->vpn_ip;
-            }
-        }
-    }
-
-    return 0;  /* Not found */
+    if (!ml) return 0;
+    return ml_peers_resolve(ml->peers, ml->peer_count, hostname);
 }

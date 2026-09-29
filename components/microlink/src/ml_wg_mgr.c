@@ -625,7 +625,9 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     return idx;
 }
 
-static void remove_peer_at(microlink_t *ml, int idx) {
+/* What goes with a peer the table forgets: its WireGuard peer, and a line */
+static void unlink_peer(void *ctx, int idx) {
+    microlink_t *ml = (microlink_t *)ctx;
     /* Remove from wireguard-lwip */
     if (ml->wg_netif && ml->peers[idx].wg_peer_index >= 0) {
         struct netif *netif = (struct netif *)ml->wg_netif;
@@ -635,14 +637,11 @@ static void remove_peer_at(microlink_t *ml, int idx) {
     char ip_str[16];
     microlink_ip_to_str(ml->peers[idx].vpn_ip, ip_str);
     ESP_LOGI(TAG, "Peer removed: %s (%s)", ml->peers[idx].hostname, ip_str);
+}
 
-    ml->peers[idx].active = false;
-    ml->peers[idx].cached = false;
-
-    /* Compact peer_count */
-    while (ml->peer_count > 0 && !ml->peers[ml->peer_count - 1].active) {
-        ml->peer_count--;
-    }
+static void remove_peer_at(microlink_t *ml, int idx) {
+    unlink_peer(ml, idx);
+    ml_peers_forget(ml->peers, &ml->peer_count, idx);
 }
 
 static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
@@ -653,14 +652,7 @@ static void remove_peer(microlink_t *ml, const ml_peer_update_t *update) {
 /* A full map's end: drop what it did not contain — peers of earlier maps,
  * and cached peers — when the whole list was queued; the map is applied. */
 static void full_map_applied(microlink_t *ml, bool complete) {
-    if (complete) {
-        for (int i = 0; i < ml->peer_count; i++) {
-            if (ml->peers[i].active && !ml->peers[i].in_map) {
-                remove_peer_at(ml, i);
-            }
-        }
-    }
-    ml->map_applied = true;
+    ml->map_applied = ml_peers_map_end(ml->peers, &ml->peer_count, complete, unlink_peer, ml);
 }
 
 static void process_peer_updates(microlink_t *ml) {
@@ -675,9 +667,7 @@ static void process_peer_updates(microlink_t *ml) {
             remove_peer(ml, update);
             break;
         case ML_PEER_FULL_MAP_BEGIN:
-            for (int i = 0; i < ml->peer_count; i++) {
-                ml->peers[i].in_map = false;
-            }
+            ml_peers_map_begin(ml->peers, ml->peer_count);
             break;
         case ML_PEER_FULL_MAP_END:
             full_map_applied(ml, update->complete);

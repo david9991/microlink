@@ -17,6 +17,7 @@
 
 #include "microlink.h"
 #include "ml_config_httpd.h"
+#include "ml_peer_table.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -70,7 +71,6 @@ extern "C" {
 
 /* Protocol limits */
 #define ML_MAX_PEERS            CONFIG_ML_MAX_PEERS
-#define ML_MAX_ENDPOINTS        8
 #define ML_MAX_PACKET_SIZE      1500
 #define ML_DERP_MAX_FRAME       (ML_MAX_PACKET_SIZE + 64)
 
@@ -248,50 +248,7 @@ typedef struct {
     int endpoint_count;
 } ml_peer_update_t;
 
-/* ============================================================================
- * Peer State (owned exclusively by wg_mgr task)
- * ========================================================================== */
-
-typedef struct {
-    /* Identity */
-    uint32_t vpn_ip;
-    uint8_t public_key[32];
-    uint8_t disco_key[32];
-    char hostname[64];
-    bool active;
-    /* Restored from the NVS cache at start, its name cut to 6 characters, and
-     * not yet in a map: never a MagicDNS answer */
-    bool cached;
-    /* In the full map being applied */
-    bool in_map;
-
-    /* Endpoints */
-    struct {
-        uint32_t ip;
-        uint16_t port;
-        bool is_ipv6;
-    } endpoints[ML_MAX_ENDPOINTS];
-    int endpoint_count;
-    uint16_t derp_region;
-
-    /* DISCO state (rate limiting) */
-    uint64_t last_ping_sent_ms;     /* Last DISCO ping we sent */
-    uint64_t last_pong_recv_ms;     /* Last DISCO pong we received */
-    uint64_t trust_until_ms;        /* Direct path trusted until */
-    uint64_t last_send_ms;          /* Last data sent to this peer */
-    uint64_t last_upgrade_ms;       /* Last path upgrade attempt */
-
-    /* Best direct path */
-    uint32_t best_ip;
-    uint16_t best_port;
-    bool has_direct_path;
-
-    /* WireGuard peer index in wireguard-lwip */
-    int wg_peer_index;
-
-    /* On-demand handshake: tried once on first DISCO direct path discovery */
-    bool tried_initial_handshake;
-} ml_peer_t;
+/* Peer State (owned exclusively by wg_mgr task): ml_peer_t, in ml_peer_table.h */
 
 /* ============================================================================
  * DERP Map Types (parsed from MapResponse, used by coord + STUN)

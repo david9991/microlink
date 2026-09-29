@@ -1,0 +1,77 @@
+/**
+ * @file ml_peer_table.c
+ * @brief The peer table's pure logic (see ml_peer_table.h)
+ */
+
+#include "ml_peer_table.h"
+
+#include <string.h>
+
+void ml_peers_forget(ml_peer_t *peers, int *count, int idx) {
+    peers[idx].active = false;
+    peers[idx].cached = false;
+    while (*count > 0 && !peers[*count - 1].active) {
+        (*count)--;
+    }
+}
+
+void ml_peers_map_begin(ml_peer_t *peers, int count) {
+    for (int i = 0; i < count; i++) {
+        peers[i].in_map = false;
+    }
+}
+
+bool ml_peers_map_drops(const ml_peer_t *peer, bool complete) {
+    return complete && peer->active && !peer->in_map;
+}
+
+bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete,
+                      void (*drop)(void *ctx, int idx), void *ctx) {
+    for (int i = 0; i < *count; i++) {
+        if (ml_peers_map_drops(&peers[i], complete)) {
+            if (drop) drop(ctx, i);
+            ml_peers_forget(peers, count, i);
+        }
+    }
+    return true;
+}
+
+/* Whether the first `len` characters of a and b match, ignoring ASCII case,
+ * a NUL in both ending the match early */
+static bool same_name(const char *a, const char *b, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        char ca = a[i];
+        char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return false;
+        if (ca == '\0') return true;
+    }
+    return true;
+}
+
+uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *name) {
+    if (!name || name[0] == '\0') return 0;
+    const size_t name_len = strlen(name);
+    for (int i = 0; i < count; i++) {
+        const ml_peer_t *p = &peers[i];
+        /* A cached peer's name is cut: it could stand for another peer */
+        if (!p->active || p->cached || p->hostname[0] == '\0') continue;
+
+        /* 1. Exact match (case-insensitive) */
+        if (same_name(p->hostname, name, sizeof(p->hostname))) {
+            return p->vpn_ip;
+        }
+
+        /* 2. Prefix match: query "npc1" matches peer "npc1.tail12345.ts.net"
+         * The query must match up to the first '.' in the peer hostname. */
+        const char *dot = strchr(p->hostname, '.');
+        if (dot) {
+            const size_t short_len = (size_t)(dot - p->hostname);
+            if (name_len == short_len && same_name(p->hostname, name, short_len)) {
+                return p->vpn_ip;
+            }
+        }
+    }
+    return 0;
+}
