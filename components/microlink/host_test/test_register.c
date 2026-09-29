@@ -257,8 +257,6 @@ static void read_random_payloads(void) {
     }
 }
 
-/* Random runs of frames: HEADERS, CONTINUATION, DATA and SETTINGS on streams
- * 0, 1 and 3, their payloads a status or random bytes, cut anywhere */
 /* Random runs of frames: HEADERS, CONTINUATION, DATA, RST_STREAM, SETTINGS
  * and WINDOW_UPDATE on streams 0, 1 and 3, their payloads a status or random
  * bytes, their flags random, cut anywhere. Every reader walks them alike:
