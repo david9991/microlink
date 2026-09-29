@@ -980,6 +980,21 @@ err_t wireguardif_remove_peer(struct netif *netif, u8_t peer_index) {
 	return result;
 }
 
+void wireguardif_fini(struct netif *netif) {
+	if (!netif || !netif->state) {
+		return;
+	}
+	struct wireguard_device *device = (struct wireguard_device *)netif->state;
+	sys_untimeout(wireguardif_tmr, device);
+	if (device->udp_pcb) {
+		udp_remove(device->udp_pcb);
+		device->udp_pcb = NULL;
+	}
+	netif->state = NULL;
+	crypto_zero(device, sizeof(struct wireguard_device));
+	mem_free(device);
+}
+
 void wireguardif_shutdown(struct netif *netif) {
 	if (!netif || !netif->state) {
 		return;
