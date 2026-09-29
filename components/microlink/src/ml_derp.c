@@ -37,8 +37,6 @@
 
 static const char *TAG = "ml_derp";
 
-/* Timeout for DERP connection handshake operations */
-
 /* ============================================================================
  * Custom BIO callbacks for non-blocking TLS I/O
  *
@@ -666,7 +664,9 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
      * Always start from node 0 (the first/preferred node in the DERPMap).
      * Only rotate to a different node after a SUCCESSFUL connection drops,
      * NOT on connection failure (to avoid bouncing between nodes). */
-    const char *derp_host = ML_DERP_HOST;
+    const char *derp_host = ML_DERP_HOST;  /* its name, in the upgrade's Host */
+    const char *derp_dial = ML_DERP_HOST;  /* what is dialled */
+    const char *derp_cert = ML_DERP_HOST;  /* the name its certificate must be for */
     int derp_port = ML_DERP_PORT;
 
     if (ml->derp_region_count > 0 && ml->derp_home_region > 0) {
@@ -677,7 +677,15 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
                 for (int attempt = 0; attempt < ml->derp_regions[i].node_count; attempt++) {
                     if (!ml->derp_regions[i].nodes[attempt].stun_only &&
                         ml->derp_regions[i].nodes[attempt].hostname[0]) {
-                        derp_host = ml->derp_regions[i].nodes[attempt].hostname;
+                        const ml_derp_node_t *node = &ml->derp_regions[i].nodes[attempt];
+                        /* A node's IPv4, when the map gives one, is dialled
+                         * in place of its HostName ("none": not at all);
+                         * its certificate is for CertName, when given, else
+                         * for HostName (an IP literal among them) */
+                        derp_host = node->hostname;
+                        derp_dial = node->ipv4[0] && strcmp(node->ipv4, "none") != 0
+                                        ? node->ipv4 : node->hostname;
+                        derp_cert = node->cert_name[0] ? node->cert_name : node->hostname;
                         if (ml->derp_regions[i].nodes[attempt].derp_port > 0) {
                             derp_port = ml->derp_regions[i].nodes[attempt].derp_port;
                         }
@@ -700,8 +708,8 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", derp_port);
 
-    if (ml_getaddrinfo(derp_host, port_str, &hints, &res) != 0 || !res) {
-        ESP_LOGE(TAG, "DNS resolve failed for %s", derp_host);
+    if (ml_getaddrinfo(derp_dial, port_str, &hints, &res) != 0 || !res) {
+        ESP_LOGE(TAG, "DNS resolve failed for %s", derp_dial);
         return ESP_FAIL;
     }
 
@@ -752,7 +760,15 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         return ESP_FAIL;
     }
 #ifdef CONFIG_ML_DERP_VERIFY_CERT
-    /* The relay's certificate and name, against ESP-IDF's bundle */
+    /* The relay's certificate and name, against ESP-IDF's bundle. A CertName
+     * that pins a self-signed certificate by its hash cannot be verified so:
+     * such a relay is not used. */
+    if (strncmp(derp_cert, "sha256-raw:", 11) == 0) {
+        ESP_LOGE(TAG, "DERP %s: a pinned self-signed certificate (%s) is not supported",
+                 derp_host, derp_cert);
+        derp_release(ml);
+        return ESP_FAIL;
+    }
     mbedtls_ssl_conf_authmode(&ml->derp.ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
     if (esp_crt_bundle_attach(&ml->derp.ssl_conf) != ESP_OK) {
         ESP_LOGE(TAG, "Certificate bundle not attached");
@@ -766,7 +782,9 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     mbedtls_ssl_conf_read_timeout(&ml->derp.ssl_conf, ML_CONNECT_TIMEOUT_MS);
 
     if (mbedtls_ssl_setup(&ml->derp.ssl, &ml->derp.ssl_conf) != 0 ||
-        mbedtls_ssl_set_hostname(&ml->derp.ssl, derp_host) != 0) {
+        mbedtls_ssl_set_hostname(&ml->derp.ssl,
+                                 strncmp(derp_cert, "sha256-raw:", 11) == 0 ? derp_host
+                                                                            : derp_cert) != 0) {
         ESP_LOGE(TAG, "TLS setup failed");
         derp_release(ml);
         return ESP_FAIL;

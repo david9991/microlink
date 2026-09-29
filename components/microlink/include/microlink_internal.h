@@ -257,6 +257,7 @@ typedef struct {
 
 typedef struct {
     char hostname[64];
+    char cert_name[64];     /* the name its certificate is for, when not hostname */
     char ipv4[16];
     char ipv6[46];
     uint16_t stun_port;     /* 0 = default 3478 */

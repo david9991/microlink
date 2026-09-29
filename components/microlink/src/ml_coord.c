@@ -1965,6 +1965,11 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                             strncpy(n->hostname, hn->valuestring, sizeof(n->hostname) - 1);
                         }
 
+                        cJSON *cn = cJSON_GetObjectItem(node_obj, "CertName");
+                        if (cJSON_IsString(cn)) {
+                            strncpy(n->cert_name, cn->valuestring, sizeof(n->cert_name) - 1);
+                        }
+
                         cJSON *ip4 = cJSON_GetObjectItem(node_obj, "IPv4");
                         if (ip4 && ip4->valuestring) {
                             strncpy(n->ipv4, ip4->valuestring, sizeof(n->ipv4) - 1);
