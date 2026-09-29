@@ -76,8 +76,9 @@ typedef struct {
 } ml_h2_response_t;
 
 /**
- * @brief Read a stream's response from a run of frames: the one walk every
- *        reader of a response shares
+ * @brief Read a stream's response from a run of frames: the one walk a
+ *        registration's response is read by, its end, its status and its
+ *        body alike
  * @param frames HTTP/2 frames as received, each with its 9-byte header
  * @param len Their length
  * @param stream The stream the response is on
@@ -95,6 +96,11 @@ typedef struct {
  * response: any frame between a HEADERS frame and its END_HEADERS, a DATA
  * frame before the final header block, padding that does not fit, and a 1xx
  * that ends the stream.
+ *
+ * The map's readers in ml_coord.c do not use it; each walks its frames its
+ * own way: do_fetch_peers's scan for the first map's end and its copy of
+ * that map's DATA, and poll_map_update's read of the long-poll stream, a
+ * stream that does not end, among the server's PINGs and SETTINGS.
  */
 void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
                          uint8_t *data, size_t cap, ml_h2_response_t *r);

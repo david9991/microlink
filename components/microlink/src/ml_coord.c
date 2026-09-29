@@ -1658,7 +1658,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         }
         free(frame_buf);
 
-        /* Scan newly accumulated data for H2 END_STREAM flag.
+        /* Scan newly accumulated data for H2 END_STREAM flag: a walk of its
+         * own, not ml_h2_read_response's (see ml_register.h).
          * H2 frame header: 3 bytes length + 1 byte type + 1 byte flags + 4 bytes stream ID.
          * DATA frame type=0x00, END_STREAM flag=0x01.
          * We scan from the start each time since frames may span Noise boundaries. */
@@ -1714,7 +1715,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
              (int)(h2_total / 1024),
              (unsigned long)(ml_get_time_ms() - recv_start_ms));
 
-    /* Now parse complete H2 frames from accumulated buffer */
+    /* Now parse complete H2 frames from accumulated buffer: a walk of its
+     * own, not ml_h2_read_response's (see ml_register.h) */
     int fpos = 0;
     while (fpos + 9 <= (int)h2_total) {
         uint32_t f_len = (h2_recv[fpos] << 16) | (h2_recv[fpos + 1] << 8) | h2_recv[fpos + 2];
@@ -2231,7 +2233,8 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
         return frame_len;  /* Real error or connection closed */
     }
 
-    /* Extract DATA frame payload from H2 frames, track flow control */
+    /* Extract DATA frame payload from H2 frames, track flow control: a walk
+     * of its own, not ml_h2_read_response's (see ml_register.h) */
     uint8_t *json_data = NULL;
     size_t json_data_len = 0;
     uint32_t total_data_bytes = 0;
