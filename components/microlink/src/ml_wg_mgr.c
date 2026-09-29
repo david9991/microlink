@@ -1433,8 +1433,15 @@ esp_err_t ml_wg_mgr_trigger_handshake(microlink_t *ml, uint32_t dest_vpn_ip) {
 
     struct netif *netif = (struct netif *)ml->wg_netif;
 
-    /* Don't destroy an existing valid session */
+    /* Don't destroy an existing valid session. The netif is read again under
+     * lwIP's core lock, which its teardown clears it under: from another
+     * task, the one read before could be gone. */
     const bool lwip_taken = ml_lwip_lock();
+    netif = (struct netif *)ml->wg_netif;
+    if (!netif) {
+        ml_lwip_unlock(lwip_taken);
+        return ESP_ERR_INVALID_STATE;
+    }
     err_t is_up = wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index, NULL, NULL);
     if (is_up == ERR_OK) {
         ml_lwip_unlock(lwip_taken);
@@ -1477,7 +1484,9 @@ bool ml_wg_mgr_peer_is_up(microlink_t *ml, uint32_t vpn_ip) {
     ip_addr_t cur_ip;
     u16_t cur_port;
     const bool lwip_taken = ml_lwip_lock();
-    bool up = wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index, &cur_ip, &cur_port) == ERR_OK;
+    netif = (struct netif *)ml->wg_netif;  /* again, under the lock its teardown takes */
+    bool up = netif && wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index, &cur_ip,
+                                              &cur_port) == ERR_OK;
     if (up) {
         /* Verify WG internal peer key matches our DISCO peer */
         struct wireguard_device *dev = (struct wireguard_device *)netif->state;
@@ -1500,9 +1509,12 @@ bool ml_wg_mgr_peer_is_up(microlink_t *ml, uint32_t vpn_ip) {
 void ml_wg_mgr_update_transport(microlink_t *ml) {
 #if CONFIG_ML_ENABLE_CELLULAR
     if (!ml || !ml->wg_netif) return;
-    struct netif *netif = (struct netif *)ml->wg_netif;
     bool at_ready = ml_at_socket_is_ready();
-    ML_LWIP_LOCKED(wireguardif_force_derp_output(netif, at_ready));
+    /* The netif read under the lock its teardown takes */
+    const bool lwip_taken = ml_lwip_lock();
+    struct netif *netif = (struct netif *)ml->wg_netif;
+    if (netif) wireguardif_force_derp_output(netif, at_ready);
+    ml_lwip_unlock(lwip_taken);
     ESP_LOGI(TAG, "WG transport updated: force_derp=%d (%s)",
              at_ready, at_ready ? "AT socket" : "PPP/WiFi");
 #else
