@@ -27,6 +27,9 @@
 #include "lwip/netdb.h"
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/error.h"
+#ifdef CONFIG_ML_DERP_VERIFY_CERT
+#include "esp_crt_bundle.h"
+#endif
 #include "nacl_box.h"
 #include <string.h>
 #include <errno.h>
@@ -748,7 +751,17 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         derp_release(ml);
         return ESP_FAIL;
     }
+#ifdef CONFIG_ML_DERP_VERIFY_CERT
+    /* The relay's certificate and name, against ESP-IDF's bundle */
+    mbedtls_ssl_conf_authmode(&ml->derp.ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+    if (esp_crt_bundle_attach(&ml->derp.ssl_conf) != ESP_OK) {
+        ESP_LOGE(TAG, "Certificate bundle not attached");
+        derp_release(ml);
+        return ESP_FAIL;
+    }
+#else
     mbedtls_ssl_conf_authmode(&ml->derp.ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
+#endif
     mbedtls_ssl_conf_rng(&ml->derp.ssl_conf, mbedtls_ctr_drbg_random, &ml->derp.ctr_drbg);
     mbedtls_ssl_conf_read_timeout(&ml->derp.ssl_conf, ML_CONNECT_TIMEOUT_MS);
 

@@ -53,6 +53,18 @@ menu "MicroLink V2 Configuration"
         default 4 if ML_LOG_LEVEL_DEBUG
         default 5 if ML_LOG_LEVEL_VERBOSE
 
+    config ML_DERP_VERIFY_CERT
+        bool "Verify the DERP server's TLS certificate"
+        depends on MBEDTLS_CERTIFICATE_BUNDLE
+        default y
+        help
+            Check the DERP relay's certificate, and its name, against
+            ESP-IDF's certificate bundle (MBEDTLS_CERTIFICATE_BUNDLE).
+            Tailscale's relays are publicly trusted. Turn this off only for
+            a relay whose certificate no public authority signed; the
+            traffic through a relay is WireGuard's either way, but an
+            unverified relay can drop or delay it.
+
     config ML_HOSTINFO_OS
         string "OS this node reports to the control server"
         default "freertos"
