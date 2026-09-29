@@ -138,18 +138,21 @@ static err_t wg_derp_output_cb(const uint8_t *peer_public_key,
         return ERR_CONN;
     }
 
-    /* Log WG handshake initiations with key and one-time hex dump. The name
-     * is read without the peer table's lock (see microlink_t.peers_lock):
-     * lwIP's thread waits on no task's lock, and it only logs. */
+    /* Log WG handshake initiations with key and one-time hex dump. This runs
+     * under lwIP's core lock, in whichever task holds it; the peer's name is
+     * copied under the peer table's lock, a leaf that may be taken there
+     * (see microlink_t.peers_lock), and logged after it is released. */
     if (len >= 4 && data[0] == 0x01) {
         static int init_dump_count = 0;
-        const char *hostname = "?";
+        char hostname[sizeof(ml->peers[0].hostname)] = "?";
+        ml_peers_lock(ml);
         for (int i = 0; i < ml->peer_count; i++) {
             if (memcmp(ml->peers[i].public_key, peer_public_key, 32) == 0) {
-                hostname = ml->peers[i].hostname;
+                memcpy(hostname, ml->peers[i].hostname, sizeof(hostname));
                 break;
             }
         }
+        ml_peers_unlock(ml);
         ESP_LOGI(TAG, "WG INIT -> %s len=%d key=%02x%02x%02x%02x%02x%02x%02x%02x",
                  hostname, (int)len,
                  peer_public_key[0], peer_public_key[1],

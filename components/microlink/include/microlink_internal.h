@@ -395,18 +395,16 @@ struct microlink_s {
      * in another task (microlink_resolve, microlink_get_peer_info,
      * microlink_get_peer_count, microlink_send, ml_wg_mgr_send_cmm,
      * ml_wg_mgr_trigger_handshake, ml_wg_mgr_peer_is_up, the UDP socket's
-     * CallMeMaybe round) copies what it needs under it and acts after it is
-     * released, so a name never meets another node's address. A WireGuard
-     * index so copied is used only while, under lwIP's core lock, its
-     * WireGuard peer still has the copied key. The WG manager reads its own
-     * table without it. One reader does not take it: wg_derp_output_cb, on
-     * lwIP's thread, which waits on no task's lock, reads a slot's key and
-     * name only to name a handshake's peer in a log line — a slot changing
-     * under it gives a wrong line, never a wrong packet (a name's last byte
-     * is always its NUL). A leaf lock: nothing is
-     * taken or waited on under it — not lwIP's core lock, not a queue, not
-     * a log line — so it may be taken with lwIP's core lock held, and a
-     * WireGuard peer is removed before its slot is forgotten under it. */
+     * CallMeMaybe round, wg_derp_output_cb naming a handshake's peer)
+     * copies what it needs under it and acts after it is released, so a
+     * name never meets another node's address. A WireGuard index so copied
+     * is used only while, under lwIP's core lock, its WireGuard peer still
+     * has the copied key. The WG manager reads its own table without it. A
+     * leaf lock: nothing is taken or waited on under it — not lwIP's core
+     * lock, not a queue, not a log line — so it may be taken with lwIP's
+     * core lock held (wg_derp_output_cb runs under that lock, in whichever
+     * task holds it, and takes this one), and a WireGuard peer is removed
+     * before its slot is forgotten under it. */
     SemaphoreHandle_t peers_lock;
 
     /* STUN results (written by coord, read by coord only) */
