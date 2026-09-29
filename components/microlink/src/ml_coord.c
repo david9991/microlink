@@ -1063,7 +1063,10 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     const size_t data_flow = ml_h2_data_flow(h2_resp, h2_resp_len);
     free(h2_resp);
     const int status = response.status;
-    size_t resp_total = response.data_len <= 8191 ? response.data_len : 0;
+    /* A body is read only from a response that ended: not from one reset,
+     * nor from one the loop above stopped waiting for — either may be cut */
+    const bool whole = response.ended && !response.reset;
+    size_t resp_total = whole && response.data_len <= 8191 ? response.data_len : 0;
 
     /* What the answer was, as far as it is read: a missing or unparsable body
      * and a status that is not 2xx are answers too, and fail the registration
@@ -1084,7 +1087,12 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     ESP_LOGI(TAG, "RegisterResponse: %d bytes total data", (int)resp_total);
 
     if (resp_total == 0) {
-        ESP_LOGW(TAG, "No DATA frame in RegisterResponse");
+        if (!whole) {
+            ESP_LOGW(TAG, "RegisterResponse %s: its body is not read",
+                     response.reset ? "reset" : "unfinished");
+        } else {
+            ESP_LOGW(TAG, "No DATA frame in RegisterResponse");
+        }
         free(resp_buf);
         return registration_answered(ml, ml_register_classify(&reply), sent_key, status);
     }
