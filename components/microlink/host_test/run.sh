@@ -19,3 +19,4 @@ build() {
 }
 build test_register "$src/ml_register.c" "$here/test_register.c"
 build test_peer_table "$src/ml_peer_table.c" "$here/test_peer_table.c"
+build test_frame_read "$src/ml_frame_read.c" "$here/test_frame_read.c"

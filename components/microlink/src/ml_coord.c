@@ -34,6 +34,7 @@
 #include "mbedtls/base64.h"
 #include "mbedtls/platform_util.h"
 #include "ml_register.h"
+#include "ml_frame_read.h"
 #include <string.h>
 #include <errno.h>
 
@@ -135,62 +136,80 @@ static void coord_rcvtimeo(microlink_t *ml, uint32_t ms) {
     sock_rcvtimeo(ml->coord_sock, ms);
 }
 
-/* Read exactly `len` bytes of a frame. *deadline is 0 until the frame has
- * begun: then a read waits up to the socket's own timeout, and one that times
- * out with nothing read fails with errno EAGAIN — nothing is lost, the caller
- * may read again. From the first byte read (or a deadline the caller already
- * set, for a frame whose start it read) the rest of the frame must arrive by
- * *deadline, ML_PARTIAL_READ_MS after that byte: every read waits at most the
- * time left, and the deadline and a stop are checked after each. A frame not
- * finished by then, or at a stop, fails with ETIMEDOUT or ECANCELED — its
- * stream is lost, and the caller must not read on. A closed connection fails
- * with ECONNRESET. */
+/* The control socket, the clock and a stop, as ml_frame_read takes them */
+struct coord_io {
+    microlink_t *ml;
+    int err;  /* the last read's errno, kept from what follows it */
+};
+
+static int coord_io_recv(void *ctx, uint8_t *buf, size_t len, bool *timed_out) {
+    struct coord_io *c = (struct coord_io *)ctx;
+    const int n = ml_recv(c->ml->coord_sock, buf, len, 0);
+    c->err = n < 0 ? errno : 0;
+    *timed_out = n < 0 && (c->err == EAGAIN || c->err == EWOULDBLOCK);
+    return n;
+}
+
+static uint64_t coord_io_now(void *ctx) {
+    (void)ctx;
+    return ml_get_time_ms();
+}
+
+static bool coord_io_stopping(void *ctx) {
+    return ml_stopping(((struct coord_io *)ctx)->ml, 0);
+}
+
+static void coord_io_timeout(void *ctx, uint32_t ms) {
+    sock_rcvtimeo(((struct coord_io *)ctx)->ml->coord_sock, ms);
+}
+
+/* Read exactly `len` bytes of a frame from the control socket, as
+ * ml_frame_read reads one: *deadline is 0 until the frame has begun, and
+ * set at its first byte to ML_PARTIAL_READ_MS after it (a caller that read
+ * the frame's start passes the deadline that read set). Only a read that
+ * took nothing fails with errno EAGAIN: nothing is lost, the caller may
+ * read again. A frame begun and not finished by its deadline, or at a stop,
+ * fails with ETIMEDOUT or ECANCELED — its stream is lost, and the caller
+ * must not read on; a closed connection with ECONNRESET, and a failed read
+ * with its own errno. */
 static int coord_recv_by(microlink_t *ml, uint8_t *buf, size_t len, uint64_t *deadline) {
-    size_t recvd = 0;
-    bool clamped = false;
-    int result = 0;
-    while (recvd < len) {
-        if (*deadline != 0) {
-            const uint64_t now = ml_get_time_ms();
-            if (now >= *deadline || ml_stopping(ml, 0)) {
-                ESP_LOGE(TAG, "coord_recv: frame given up at %d/%d bytes (%s)", (int)recvd,
-                         (int)len, now >= *deadline ? "deadline" : "stop");
-                errno = now >= *deadline ? ETIMEDOUT : ECANCELED;
-                result = -1;
-                break;
-            }
-            const uint64_t left = *deadline - now;
-            sock_rcvtimeo(ml->coord_sock, left < ml->coord_rcvtimeo_ms
-                                              ? (uint32_t)left : ml->coord_rcvtimeo_ms);
-            clamped = true;
-        }
-        const int n = ml_recv(ml->coord_sock, buf + recvd, len - recvd, 0);
-        if (n > 0) {
-            recvd += n;
-            if (*deadline == 0) {
-                *deadline = ml_get_time_ms() + ML_PARTIAL_READ_MS;
-            }
-            continue;
-        }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (*deadline == 0) {
-                result = -1;  /* nothing of the frame read: errno stays EAGAIN */
-                break;
-            }
-            continue;  /* the deadline, checked above, decides */
-        }
-        if (n == 0) errno = ECONNRESET;
-        ESP_LOGE(TAG, "coord_recv failed: %d (errno %d, recvd %d/%d)",
-                 n, errno, (int)recvd, (int)len);
-        result = -1;
+    struct coord_io c = {.ml = ml};
+    const ml_frame_io_t io = {
+        .recv = coord_io_recv,
+        .now_ms = coord_io_now,
+        .stopping = coord_io_stopping,
+        .set_timeout = coord_io_timeout,
+        .ctx = &c,
+    };
+    const ml_frame_limits_t limits = {
+        .socket_ms = ml->coord_rcvtimeo_ms,
+        .partial_ms = ML_PARTIAL_READ_MS,
+        .tick_ms = portTICK_PERIOD_MS,
+    };
+    size_t got = 0;
+    const ml_frame_result_t r = ml_frame_read(&io, &limits, buf, len, deadline, &got);
+    int err;
+    switch (r) {
+    case ML_FRAME_DONE:
+        return 0;
+    case ML_FRAME_EMPTY:
+        errno = EAGAIN;
+        return -1;
+    case ML_FRAME_TIMEOUT:
+    case ML_FRAME_STOPPED:
+        err = r == ML_FRAME_TIMEOUT ? ETIMEDOUT : ECANCELED;
+        ESP_LOGE(TAG, "coord_recv: frame given up at %d/%d bytes (%s)", (int)got, (int)len,
+                 r == ML_FRAME_TIMEOUT ? "deadline" : "stop");
+        break;
+    case ML_FRAME_CLOSED:
+    default:
+        err = r == ML_FRAME_CLOSED ? ECONNRESET : c.err;
+        ESP_LOGE(TAG, "coord_recv failed: %s (errno %d, recvd %d/%d)",
+                 r == ML_FRAME_CLOSED ? "closed" : "error", err, (int)got, (int)len);
         break;
     }
-    if (clamped) {
-        const int saved = errno;
-        sock_rcvtimeo(ml->coord_sock, ml->coord_rcvtimeo_ms);
-        errno = saved;
-    }
-    return result;
+    errno = err;  /* after the line, which may change errno */
+    return -1;
 }
 
 /* Read exactly `len` bytes, a frame of their own (see coord_recv_by) */
@@ -265,8 +284,10 @@ static int noise_recv(microlink_t *ml, ml_noise_state_t *noise,
     }
 
     if (coord_recv_by(ml, ciphertext, ct_len, &deadline) < 0) {
-        ESP_LOGE(TAG, "noise_recv payload failed: ct_len=%d errno=%d", ct_len, errno);
+        const int err = errno;
+        ESP_LOGE(TAG, "noise_recv payload failed: ct_len=%d errno=%d", ct_len, err);
         free(ciphertext);
+        errno = err;
         return -1;
     }
 

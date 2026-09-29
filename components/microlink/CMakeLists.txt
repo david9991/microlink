@@ -8,6 +8,7 @@ set(SRCS
     "src/ml_noise.c"
     "src/ml_h2.c"
     "src/ml_register.c"
+    "src/ml_frame_read.c"
     "src/ml_udp.c"
     "src/ml_tcp.c"
     "src/ml_peer_nvs.c"
