@@ -646,7 +646,8 @@ esp_err_t microlink_stop(microlink_t *ml) {
         ml_config_httpd_stop(ml->config_httpd);
     }
 
-    /* Clean up zero-copy PCB if active */
+    /* Clean up zero-copy PCB if active: its callback was unregistered when
+     * the WG manager unlinked the netif, and the PCB goes only now */
 #ifdef CONFIG_ML_ZERO_COPY_WG
     ml_zerocopy_deinit(ml);
 #endif

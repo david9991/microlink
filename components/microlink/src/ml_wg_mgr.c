@@ -219,6 +219,7 @@ static err_t wg_udp_output_cb(uint32_t dest_ip, uint16_t dest_port,
 /* The WireGuard netif, handed to lwIP's thread */
 struct wg_netif_call {
     struct tcpip_api_call_data call;
+    microlink_t *ml;
     struct netif *netif;
 };
 
@@ -233,9 +234,19 @@ static err_t wg_netif_link(struct tcpip_api_call_data *call) {
 }
 
 /* On lwIP's thread: take the netif down and out of lwIP's list, and free the
- * WireGuard device behind it. */
+ * WireGuard device behind it. The zero-copy receive callback, which runs on
+ * this thread too, is unregistered and ml->wg_netif cleared first, so no
+ * packet is handed to the netif from here on; the caller frees the netif
+ * once this has returned. */
 static err_t wg_netif_unlink(struct tcpip_api_call_data *call) {
-    struct netif *netif = ((struct wg_netif_call *)call)->netif;
+    struct wg_netif_call *c = (struct wg_netif_call *)call;
+    struct netif *netif = c->netif;
+#ifdef CONFIG_ML_ZERO_COPY_WG
+    if (c->ml->zc.pcb) {
+        udp_recv(c->ml->zc.pcb, NULL, NULL);  /* lwIP drops what it receives */
+    }
+#endif
+    c->ml->wg_netif = NULL;
     wireguardif_shutdown(netif);
     netif_set_link_down(netif);
     netif_set_down(netif);
@@ -295,7 +306,7 @@ static esp_err_t wg_init_interface(microlink_t *ml) {
 
     /* Add to lwIP netif list (bypass netif_add which wants init callback) and
      * bring it up — on lwIP's thread, which owns the list */
-    struct wg_netif_call link = {.netif = netif};
+    struct wg_netif_call link = {.ml = ml, .netif = netif};
     tcpip_api_call(wg_netif_link, &link.call);
 
     /* Create raw UDP PCB for WG output (avoids BSD sendto deadlock on TCPIP
@@ -1691,12 +1702,12 @@ void ml_wg_mgr_task(void *arg) {
     }
 
     /* Shutdown WireGuard interface: on lwIP's thread, which owns the netif
-     * list and the device's timer and socket; then the netif itself */
+     * list and the device's timer and socket, and clears ml->wg_netif; then
+     * the netif itself, which nothing on that thread can reach any more */
     if (ml->wg_netif) {
-        struct wg_netif_call unlink = {.netif = (struct netif *)ml->wg_netif};
+        struct wg_netif_call unlink = {.ml = ml, .netif = (struct netif *)ml->wg_netif};
         tcpip_api_call(wg_netif_unlink, &unlink.call);
         free(unlink.netif);
-        ml->wg_netif = NULL;
     }
 
     ESP_LOGI(TAG, "WG Manager task exiting");
