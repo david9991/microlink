@@ -351,6 +351,11 @@ struct microlink_s {
     TaskHandle_t coord_task;
     TaskHandle_t wg_mgr_task;
 
+    /* Each task gives this once, just before it deletes itself; stop takes it
+     * once for every task start created, so nothing is freed under a task. */
+    SemaphoreHandle_t task_exited;
+    int tasks_started;
+
     /* Queues */
     QueueHandle_t derp_tx_queue;        /* -> derp_tx task */
     QueueHandle_t disco_rx_queue;       /* net_io -> wg_mgr */
@@ -453,6 +458,27 @@ struct microlink_s {
     ml_zerocopy_t zc;
 #endif
 };
+
+/* ============================================================================
+ * Stopping
+ * ========================================================================== */
+
+/* How often a wait that a stop cuts short looks for one. */
+#define ML_STOP_POLL_MS 100
+
+/* Whether a stop has been asked for, waiting up to `ms` for one first. Use it
+ * in place of a delay, so a stop does not wait the delay out. */
+static inline bool ml_stopping(microlink_t *ml, uint32_t ms) {
+    return (xEventGroupWaitBits(ml->events, ML_EVT_SHUTDOWN_REQUEST, pdFALSE, pdFALSE,
+                                pdMS_TO_TICKS(ms)) & ML_EVT_SHUTDOWN_REQUEST) != 0;
+}
+
+/* The end of every task: tell stop this one is gone, then delete it. Nothing
+ * of `ml` is touched after the give — stop may free it at once. */
+static inline void ml_task_exit(microlink_t *ml) {
+    xSemaphoreGive(ml->task_exited);
+    vTaskDelete(NULL);
+}
 
 /* ============================================================================
  * Internal Function Declarations (per-module)
@@ -669,6 +695,14 @@ static inline ssize_t ml_read_sock(int fd, void *buf, size_t len) {
 #define ml_write_sock   write
 #define ml_read_sock    read
 #endif /* CONFIG_ML_ENABLE_CELLULAR */
+
+#include <sys/socket.h>
+
+/* microlink.c: connect(), given up after `timeout_ms` or as soon as a stop is
+ * asked for (errno ETIMEDOUT or ECANCELED). A blocking lwIP connect waits out
+ * every SYN retry, and nothing else can cut it short. */
+int ml_connect_stoppable(microlink_t *ml, int sock, const struct sockaddr *addr,
+                         socklen_t addrlen, uint32_t timeout_ms);
 
 /* PSRAM allocation helper */
 static inline void *ml_psram_malloc(size_t size) {

@@ -259,7 +259,7 @@ static int do_tcp_connect(microlink_t *ml) {
 
     ESP_LOGI(TAG, "Connecting to %s:80...", CTRL_HOST(ml));
 
-    if (ml_connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
+    if (ml_connect_stoppable(ml, sock, res->ai_addr, res->ai_addrlen, 10000) < 0) {
         ESP_LOGE(TAG, "TCP connect failed: %d", errno);
         ml_close_sock(sock);
         ml_freeaddrinfo(res);
@@ -2150,7 +2150,7 @@ void ml_coord_task(void *arg) {
                              pdFALSE, pdFALSE, portMAX_DELAY);
         if (wb & ML_EVT_SHUTDOWN_REQUEST) {
             ESP_LOGI(TAG, "Shutdown requested before WiFi, exiting");
-            vTaskDelete(NULL);
+            ml_task_exit(ml);
             return;
         }
     }
@@ -2283,10 +2283,10 @@ void ml_coord_task(void *arg) {
             /* Signal DERP I/O task to connect (connection now owned by I/O task) */
             if (!ml->derp.connected) {
                 xEventGroupSetBits(ml->events, ML_EVT_DERP_CONNECT_REQ);
-                /* Wait for DERP to connect (up to 15s) before continuing */
+                /* Wait for DERP to connect (up to 15s, or a stop) before continuing */
                 ESP_LOGI(TAG, "Waiting for DERP I/O task to connect...");
-                xEventGroupWaitBits(ml->events, ML_EVT_DERP_CONNECTED,
-                                    pdFALSE, pdTRUE, pdMS_TO_TICKS(15000));
+                xEventGroupWaitBits(ml->events, ML_EVT_DERP_CONNECTED | ML_EVT_SHUTDOWN_REQUEST,
+                                    pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
             }
 
             /* Start streaming long-poll for incremental updates */
@@ -2589,5 +2589,5 @@ void ml_coord_task(void *arg) {
     memset(&noise, 0, sizeof(noise));
 
     ESP_LOGI(TAG, "Coord task exiting");
-    vTaskDelete(NULL);
+    ml_task_exit(ml);
 }

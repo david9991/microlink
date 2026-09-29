@@ -278,6 +278,15 @@ microlink_t *microlink_init(const microlink_config_t *config) {
         return NULL;
     }
 
+    /* Counts the tasks that have exited, for stop */
+    ml->task_exited = xSemaphoreCreateCounting(4, 0);
+    if (!ml->task_exited) {
+        ESP_LOGE(TAG, "Failed to create task exit semaphore");
+        vEventGroupDelete(ml->events);
+        free(ml);
+        return NULL;
+    }
+
     /* Create queues */
     ml->derp_tx_queue = xQueueCreate(ML_DERP_TX_QUEUE_DEPTH, sizeof(ml_derp_tx_item_t));
     ml->disco_rx_queue = xQueueCreate(ML_DISCO_RX_QUEUE_DEPTH, sizeof(ml_rx_packet_t));
@@ -370,12 +379,15 @@ skip_bsd_socket:
     /* Create tasks */
     BaseType_t ret;
 
+    /* Every task created is counted, so stop waits for each one of them to
+     * exit — also when a later one could not be created. */
     ret = xTaskCreatePinnedToCore(ml_net_io_task, "ml_net_io", ML_TASK_NET_IO_STACK,
                                    ml, ML_TASK_NET_IO_PRIO, &ml->net_io_task, ML_TASK_NET_IO_CORE);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create net_io task");
         return ESP_FAIL;
     }
+    ml->tasks_started++;
 
     ret = xTaskCreatePinnedToCore(ml_derp_tx_task, "ml_derp_tx", ML_TASK_DERP_TX_STACK,
                                    ml, ML_TASK_DERP_TX_PRIO, &ml->derp_tx_task, ML_TASK_DERP_TX_CORE);
@@ -383,6 +395,7 @@ skip_bsd_socket:
         ESP_LOGE(TAG, "Failed to create derp_tx task");
         return ESP_FAIL;
     }
+    ml->tasks_started++;
 
     ret = xTaskCreatePinnedToCore(ml_coord_task, "ml_coord", ML_TASK_COORD_STACK,
                                    ml, ML_TASK_COORD_PRIO, &ml->coord_task, ML_TASK_COORD_CORE);
@@ -390,6 +403,7 @@ skip_bsd_socket:
         ESP_LOGE(TAG, "Failed to create coord task");
         return ESP_FAIL;
     }
+    ml->tasks_started++;
 
     ret = xTaskCreatePinnedToCore(ml_wg_mgr_task, "ml_wg_mgr", ML_TASK_WG_MGR_STACK,
                                    ml, ML_TASK_WG_MGR_PRIO, &ml->wg_mgr_task, ML_TASK_WG_MGR_CORE);
@@ -397,6 +411,7 @@ skip_bsd_socket:
         ESP_LOGE(TAG, "Failed to create wg_mgr task");
         return ESP_FAIL;
     }
+    ml->tasks_started++;
 
     /* WiFi is expected to be connected before microlink_start() is called.
      * Signal the event so coord/wg_mgr tasks proceed immediately. */
@@ -511,12 +526,21 @@ esp_err_t microlink_stop(microlink_t *ml) {
     ESP_LOGI(TAG, "Stopping...");
     xEventGroupSetBits(ml->events, ML_EVT_SHUTDOWN_REQUEST);
 
-    /* Wait for tasks to exit (they check ML_EVT_SHUTDOWN_REQUEST).
-     * Tasks call vTaskDelete(NULL) to self-delete, so we must NOT call
-     * vTaskDelete() on them again — that causes a crash in uxListRemove
-     * because the task's list node is already invalid. Just wait and
-     * NULL the handles. */
-    vTaskDelay(pdMS_TO_TICKS(3000));
+    /* Wake the coord task out of its reconnect back-off, which waits on its
+     * command queue; every other wait of every task either watches
+     * ML_EVT_SHUTDOWN_REQUEST or is bounded by a socket timeout. */
+    ml_coord_cmd_t cmd = ML_CMD_DISCONNECT;
+    xQueueSend(ml->coord_cmd_queue, &cmd, 0);
+
+    /* Wait until every task started has exited: each gives task_exited just
+     * before it deletes itself (so it must not be deleted here too). Nothing
+     * the tasks use is freed or closed before then. */
+    for (int left = ml->tasks_started; left > 0; left--) {
+        while (xSemaphoreTake(ml->task_exited, pdMS_TO_TICKS(5000)) != pdTRUE) {
+            ESP_LOGW(TAG, "Stopping: %d task(s) still finishing", left);
+        }
+    }
+    ml->tasks_started = 0;
 
     ml->net_io_task = NULL;
     ml->derp_tx_task = NULL;
@@ -567,6 +591,7 @@ void microlink_destroy(microlink_t *ml) {
 
     /* Delete event group */
     if (ml->events) vEventGroupDelete(ml->events);
+    if (ml->task_exited) vSemaphoreDelete(ml->task_exited);
 
     /* Clear keys from memory */
     memset(ml->machine_private_key, 0, 32);
@@ -692,6 +717,54 @@ const char *microlink_imei_device_name(void) {
     }
 #endif
     return NULL;
+}
+
+int ml_connect_stoppable(microlink_t *ml, int sock, const struct sockaddr *addr,
+                         socklen_t addrlen, uint32_t timeout_ms) {
+#ifdef CONFIG_ML_ENABLE_CELLULAR
+    /* An AT socket connects on the modem; its own timeout bounds it. */
+    (void)ml;
+    (void)timeout_ms;
+    return ml_connect(sock, addr, addrlen);
+#else
+    const int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+        return connect(sock, addr, addrlen);
+    }
+    int ret = connect(sock, addr, addrlen);
+    if (ret < 0 && errno == EINPROGRESS) {
+        ret = -1;
+        errno = ETIMEDOUT;
+        for (uint32_t waited = 0; waited < timeout_ms; waited += ML_STOP_POLL_MS) {
+            if (ml_stopping(ml, 0)) {
+                errno = ECANCELED;
+                break;
+            }
+            fd_set writable;
+            FD_ZERO(&writable);
+            FD_SET(sock, &writable);
+            struct timeval tv = { .tv_sec = 0, .tv_usec = ML_STOP_POLL_MS * 1000 };
+            const int n = select(sock + 1, NULL, &writable, NULL, &tv);
+            if (n < 0) {
+                break;  /* errno is select's */
+            }
+            if (n > 0) {
+                int err = 0;
+                socklen_t len = sizeof(err);
+                if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0) {
+                    ret = 0;
+                } else {
+                    errno = err != 0 ? err : ECONNREFUSED;
+                }
+                break;
+            }
+        }
+    }
+    const int saved = errno;
+    fcntl(sock, F_SETFL, flags);
+    errno = saved;
+    return ret;
+#endif
 }
 
 uint64_t ml_get_time_ms(void) {

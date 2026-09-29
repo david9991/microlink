@@ -523,11 +523,11 @@ void ml_derp_tx_task(void *arg) {
             EventBits_t bits = xEventGroupGetBits(ml->events);
             if ((bits & ML_EVT_DERP_CONNECT_REQ) && !ml->derp.connected) {
                 xEventGroupClearBits(ml->events, ML_EVT_DERP_CONNECT_REQ);
-                /* Retry up to 3 times with 2s backoff */
+                /* Retry up to 3 times with 2s backoff (cut short by a stop) */
                 for (int attempt = 0; attempt < 3 && !ml->derp.connected; attempt++) {
                     if (attempt > 0) {
                         ESP_LOGW(TAG, "DERP connect retry %d/3 in 2s...", attempt + 1);
-                        vTaskDelay(pdMS_TO_TICKS(2000));
+                        if (ml_stopping(ml, 2000)) break;
                     } else {
                         ESP_LOGI(TAG, "DERP connect requested, connecting from I/O task");
                     }
@@ -545,12 +545,11 @@ void ml_derp_tx_task(void *arg) {
                          ml->derp.connected ? "connected" : "disconnected");
                 ml_derp_disconnect(ml);
                 verbose_phase = false;
-                /* Auto-reconnect after disconnect */
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                /* Auto-reconnect after disconnect (cut short by a stop) */
                 for (int attempt = 0; attempt < 3 && !ml->derp.connected; attempt++) {
+                    if (ml_stopping(ml, attempt > 0 ? 2000 : 1000)) break;
                     if (attempt > 0) {
-                        ESP_LOGW(TAG, "DERP reconnect retry %d/3 in 2s...", attempt + 1);
-                        vTaskDelay(pdMS_TO_TICKS(2000));
+                        ESP_LOGW(TAG, "DERP reconnect retry %d/3", attempt + 1);
                     }
                     if (ml_derp_connect(ml) == ESP_OK) {
                         connected_since_ms = ml_get_time_ms();
@@ -630,8 +629,10 @@ void ml_derp_tx_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
+    /* The connection is this task's: close it, and free what waits to go */
+    ml_derp_disconnect(ml);
     ESP_LOGI(TAG, "DERP I/O task exiting");
-    vTaskDelete(NULL);
+    ml_task_exit(ml);
 }
 
 /* ============================================================================
@@ -697,7 +698,7 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     ml_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     ml_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (ml_connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
+    if (ml_connect_stoppable(ml, sock, res->ai_addr, res->ai_addrlen, 10000) < 0) {
         ESP_LOGE(TAG, "TCP connect failed: %d", errno);
         ml_close_sock(sock);
         ml_freeaddrinfo(res);
