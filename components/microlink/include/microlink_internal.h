@@ -18,6 +18,7 @@
 #include "microlink.h"
 #include "ml_config_httpd.h"
 #include "ml_peer_table.h"
+#include "ml_derp_node.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -260,15 +261,7 @@ typedef struct {
 #define ML_MAX_DERP_REGIONS     32
 #define ML_MAX_DERP_NODES       4
 
-typedef struct {
-    char hostname[64];
-    char cert_name[64];     /* the name its certificate is for, when not hostname */
-    char ipv4[16];
-    char ipv6[46];
-    uint16_t stun_port;     /* 0 = default 3478 */
-    uint16_t derp_port;     /* 0 = default 443 */
-    bool stun_only;         /* true if node only serves STUN, not DERP */
-} ml_derp_node_t;
+/* ml_derp_node_t: ml_derp_node.h */
 
 typedef struct {
     uint16_t region_id;

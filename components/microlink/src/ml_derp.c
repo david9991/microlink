@@ -41,12 +41,6 @@ static const char *TAG = "ml_derp";
 /* A DERP node's CertName that pins a self-signed certificate by its hash */
 #define DERP_CERT_PIN_PREFIX "sha256-raw:"
 
-/* A DERP node's IPv4 or IPv6 given as an address to dial: not empty, and not
- * "none" (that family is not to be used at all) */
-static bool derp_addr_given(const char *addr) {
-    return addr[0] != '\0' && strcmp(addr, "none") != 0;
-}
-
 #ifdef CONFIG_ML_DERP_VERIFY_CERT
 /* ESP-IDF's check of a certificate chain against its bundle, which
  * esp_crt_bundle_attach installs; esp_crt_bundle.c defines it, its header
@@ -694,48 +688,38 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
      * Always start from node 0 (the first/preferred node in the DERPMap).
      * Only rotate to a different node after a SUCCESSFUL connection drops,
      * NOT on connection failure (to avoid bouncing between nodes). */
-    const char *derp_host = ML_DERP_HOST;  /* its name: the SNI, and the upgrade's Host */
-    const char *derp_dial = ML_DERP_HOST;  /* what is dialled */
-    int derp_family = AF_UNSPEC;           /* the address family dialled */
-    const char *derp_cert = ML_DERP_HOST;  /* the name its certificate must be for */
-    int derp_port = ML_DERP_PORT;
+    /* Without a map, the default relay. How a node is dialled is copied out
+     * of the map (ml_derp_pick): coord rewrites it, unlocked, while this
+     * connects, and the names are used through the handshake. */
+    ml_derp_dial_t pick = { .family = ML_DERP_ANY, .port = 0 };
+    ml_copy_name(pick.host, sizeof(pick.host), ML_DERP_HOST);
+    ml_copy_name(pick.dial, sizeof(pick.dial), ML_DERP_HOST);
+    ml_copy_name(pick.cert, sizeof(pick.cert), ML_DERP_HOST);
 
     if (ml->derp_region_count > 0 && ml->derp_home_region > 0) {
-        for (int i = 0; i < ml->derp_region_count; i++) {
-            if (ml->derp_regions[i].region_id == ml->derp_home_region) {
-                /* Always use the first non-stun-only node (preferred node).
-                 * This ensures we connect to the same node as most peers. */
-                for (int attempt = 0; attempt < ml->derp_regions[i].node_count; attempt++) {
-                    const ml_derp_node_t *node = &ml->derp_regions[i].nodes[attempt];
-                    /* A node with both families "none" cannot be dialled */
-                    if (!node->stun_only && node->hostname[0] &&
-                        !(strcmp(node->ipv4, "none") == 0 && strcmp(node->ipv6, "none") == 0)) {
-                        /* An IPv4 the map gives is dialled in place of
-                         * HostName; with IPv4 "none", an IPv6 given, else
-                         * HostName's IPv6 addresses only — never its IPv4.
-                         * Its certificate is for CertName, when given, else
-                         * for HostName (an IP literal among them). */
-                        derp_host = node->hostname;
-                        derp_cert = node->cert_name[0] ? node->cert_name : node->hostname;
-                        if (derp_addr_given(node->ipv4)) {
-                            derp_dial = node->ipv4;
-                            derp_family = AF_INET;
-                        } else if (strcmp(node->ipv4, "none") == 0) {
-                            derp_dial = derp_addr_given(node->ipv6) ? node->ipv6 : node->hostname;
-                            derp_family = AF_INET6;
-                        } else {
-                            derp_dial = node->hostname;
-                        }
-                        if (ml->derp_regions[i].nodes[attempt].derp_port > 0) {
-                            derp_port = ml->derp_regions[i].nodes[attempt].derp_port;
-                        }
-                        break;
-                    }
-                }
-                break;
+        for (int i = 0; i < ml->derp_region_count && i < ML_MAX_DERP_REGIONS; i++) {
+            const ml_derp_region_t *region = &ml->derp_regions[i];
+            if (region->region_id != ml->derp_home_region) continue;
+            /* The first node that can be dialled (the preferred node): the
+             * one most peers use. A region with none is not dialled at all —
+             * never the default relay in its place. */
+            const int nodes = region->node_count < ML_MAX_DERP_NODES
+                                  ? region->node_count : ML_MAX_DERP_NODES;
+            if (ml_derp_pick(region->nodes, nodes, true, &pick) < 0) {
+                ESP_LOGE(TAG, "DERP region %d: none of its %d nodes can be dialled",
+                         (int)ml->derp_home_region, nodes);
+                return ESP_FAIL;
             }
+            break;
         }
     }
+    const char *derp_host = pick.host;  /* its name: the SNI, and the upgrade's Host */
+    const char *derp_dial = pick.dial;  /* what is dialled */
+    const char *derp_cert = pick.cert;  /* the name its certificate must be for */
+    const int derp_family = pick.family == ML_DERP_IPV4   ? AF_INET
+                            : pick.family == ML_DERP_IPV6 ? AF_INET6
+                                                          : AF_UNSPEC;
+    const int derp_port = pick.port > 0 ? pick.port : ML_DERP_PORT;
 
     int64_t t_derp_start = esp_timer_get_time();
 
