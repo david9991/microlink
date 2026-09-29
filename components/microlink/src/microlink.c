@@ -105,6 +105,8 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
         nvs_set_blob(nvs, NVS_KEY_WG_PUB, ml->wg_public_key, 32);
         nvs_set_blob(nvs, NVS_KEY_DISCO_PRI, ml->disco_private_key, 32);
         nvs_set_blob(nvs, NVS_KEY_DISCO_PUB, ml->disco_public_key, 32);
+        /* New keys: whatever was authorised was the old ones */
+        nvs_erase_key(nvs, NVS_KEY_AUTHORIZED);
         nvs_commit(nvs);
         ESP_LOGI(TAG, "Keys saved to NVS");
     } else {
