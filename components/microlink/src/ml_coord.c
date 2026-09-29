@@ -166,9 +166,11 @@ static void coord_io_timeout(void *ctx, uint32_t ms) {
 /* Read exactly `len` bytes of a frame from the control socket, as
  * ml_frame_read reads one: *deadline is 0 until the frame has begun, and
  * set at its first byte to ML_PARTIAL_READ_MS after it (a caller that read
- * the frame's start passes the deadline that read set). Only a read that
- * took nothing fails with errno EAGAIN: nothing is lost, the caller may
- * read again. A frame begun and not finished by its deadline, or at a stop,
+ * the frame's start passes the deadline that read set). Until the frame
+ * begins, a stop is looked for every ML_RECV_STOP_POLL_MS: a stop and a
+ * map awaited do not keep each other waiting. Only a read that took
+ * nothing fails with errno EAGAIN (nothing came) or ECANCELED (a stop
+ * came): nothing is lost, and after EAGAIN the caller may read again. A frame begun and not finished by its deadline, or at a stop,
  * fails with ETIMEDOUT or ECANCELED — its stream is lost, and the caller
  * must not read on; a closed connection with ECONNRESET, and a failed read
  * with its own errno. */
@@ -185,6 +187,7 @@ static int coord_recv_by(microlink_t *ml, uint8_t *buf, size_t len, uint64_t *de
         .socket_ms = ml->coord_rcvtimeo_ms,
         .partial_ms = ML_PARTIAL_READ_MS,
         .tick_ms = portTICK_PERIOD_MS,
+        .stop_poll_ms = ML_RECV_STOP_POLL_MS,
     };
     size_t got = 0;
     const ml_frame_result_t r = ml_frame_read(&io, &limits, buf, len, deadline, &got);
@@ -194,6 +197,9 @@ static int coord_recv_by(microlink_t *ml, uint8_t *buf, size_t len, uint64_t *de
         return 0;
     case ML_FRAME_EMPTY:
         errno = EAGAIN;
+        return -1;
+    case ML_FRAME_IDLE_STOP:
+        errno = ECANCELED;  /* nothing lost, and nothing more to read */
         return -1;
     case ML_FRAME_TIMEOUT:
     case ML_FRAME_STOPPED:

@@ -17,6 +17,7 @@
 typedef enum {
     ML_FRAME_DONE,      /* every byte asked for is in */
     ML_FRAME_EMPTY,     /* nothing of the frame came within the socket's timeout: read again */
+    ML_FRAME_IDLE_STOP, /* a stop came before anything of the frame did: nothing lost */
     ML_FRAME_TIMEOUT,   /* the frame began and did not finish by its deadline: its stream is lost */
     ML_FRAME_STOPPED,   /* the frame began and a stop came: its stream is lost */
     ML_FRAME_CLOSED,    /* the connection closed */
@@ -41,6 +42,8 @@ typedef struct {
     uint32_t socket_ms;   /* the socket's own receive timeout, put back at the end */
     uint32_t partial_ms;  /* how long a frame begun has, from its first byte */
     uint32_t tick_ms;     /* the scheduler's tick: no read waits less than one */
+    uint32_t stop_poll_ms; /* before the frame begins, a stop is looked for this
+                            * often (0: only once the frame has begun) */
 } ml_frame_limits_t;
 
 /**
@@ -49,9 +52,10 @@ typedef struct {
  *        byte's time plus `partial_ms` (a caller that read the frame's start
  *        passes the deadline that read set)
  *
- * Until the frame begins, a read waits the socket's own timeout, and one
- * that times out with nothing read ends ML_FRAME_EMPTY: the only end that
- * lost nothing. Once it has begun, every read waits at most the time left
+ * Until the frame begins, the reads wait the socket's own timeout in all,
+ * in slices of `stop_poll_ms` with a stop looked for before each: nothing
+ * by the end of it is ML_FRAME_EMPTY, and a stop ML_FRAME_IDLE_STOP — the
+ * two ends that lost nothing. Once it has begun, every read waits at most the time left
  * before the deadline, rounded up to whole ticks (so none waits zero ticks
  * and spins), and the deadline and a stop are checked after each read: the
  * frame ends ML_FRAME_TIMEOUT at the deadline itself, or ML_FRAME_STOPPED.

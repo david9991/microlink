@@ -114,6 +114,10 @@ extern "C" {
  * arriving, counted from its first byte: every read of it waits no longer */
 #define ML_PARTIAL_READ_MS              3000
 
+/* How often a read on the control connection that is waiting for a frame to
+ * begin looks for a stop: how long a stop waits for such a read at most */
+#define ML_RECV_STOP_POLL_MS            500
+
 /* Control plane timing */
 #define ML_CTRL_WATCHDOG_MS             120000
 #define ML_CTRL_BACKOFF_MAX_MS          30000

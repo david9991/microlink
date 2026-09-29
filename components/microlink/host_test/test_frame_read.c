@@ -190,12 +190,38 @@ static void edges(void) {
               s.timeout == 2000,
           "stop mid-frame");
 
-    /* A stop before the frame begins does not cut a read short: the caller
-     * looks for it after an EMPTY */
+    /* Without stop polling, a stop before the frame begins does not cut a
+     * read short: the caller looks for it after an EMPTY */
     s = fresh();
     s.stop_at = 0;
     deadline = 0;
     CHECK(run(&s, &limits, 2, &deadline, &got) == ML_FRAME_EMPTY, "stop before the frame");
+
+    /* With it, a map awaited for a minute gives way to a stop within a
+     * poll: nothing lost, the socket's timeout put back */
+    const ml_frame_limits_t polled = {.socket_ms = 60000, .partial_ms = 3000, .tick_ms = 10,
+                                      .stop_poll_ms = 500};
+    s = fresh();
+    s.stop_at = 12345;
+    deadline = 0;
+    CHECK(run(&s, &polled, 2, &deadline, &got) == ML_FRAME_IDLE_STOP && got == 0 && deadline == 0 &&
+              s.now >= 12345 && s.now < 12345 + 500 + 10 && s.timeout == 60000,
+          "stop while a map is awaited: at %llu", (unsigned long long)s.now);
+    /* and nothing coming for the whole minute is EMPTY, a minute on */
+    s = fresh();
+    deadline = 0;
+    CHECK(run(&s, &polled, 2, &deadline, &got) == ML_FRAME_EMPTY && s.now >= 60000 &&
+              s.now < 60000 + 10 && s.timeout == 60000,
+          "a minute of nothing: at %llu", (unsigned long long)s.now);
+    /* a frame that begins between polls is read as before */
+    s = fresh();
+    s.arrival[0].at = 20750;
+    s.arrival[0].bytes = 2;
+    s.arrivals = 1;
+    deadline = 0;
+    CHECK(run(&s, &polled, 2, &deadline, &got) == ML_FRAME_DONE && deadline == 20750 + 3000 &&
+              s.timeout == 60000,
+          "a frame between polls");
 
     /* Closed, and failed, mid-frame */
     s = fresh();
@@ -243,6 +269,7 @@ static void random_schedules(void) {
             .socket_ms = 1 + next() % 5000,
             .partial_ms = 1 + next() % 4000,
             .tick_ms = ticks[next() % 2],
+            .stop_poll_ms = next() & 1 ? 0 : 1 + next() % 1000,
         };
         struct sim s = fresh();
         const size_t len = 1 + next() % 64;
@@ -276,8 +303,20 @@ static void random_schedules(void) {
             CHECK(got == len, "round %d: done at %zu/%zu", round, got, len);
             break;
         case ML_FRAME_EMPTY:
-            /* Only when nothing of the frame was read, and it had not begun */
+            /* Only when nothing of the frame was read, and it had not begun;
+             * polled, only once the socket's whole timeout has gone */
             CHECK(got == 0 && given == 0 && deadline == 0, "round %d: empty with %zu", round, got);
+            CHECK(lim.stop_poll_ms == 0 ||
+                      (s.now >= lim.socket_ms && s.now < lim.socket_ms + lim.tick_ms),
+                  "round %d: polled empty at %llu", round, (unsigned long long)s.now);
+            break;
+        case ML_FRAME_IDLE_STOP:
+            /* Only polled, before the frame began, and within a poll of the stop */
+            CHECK(got == 0 && given == 0 && deadline == 0 && lim.stop_poll_ms != 0 &&
+                      s.now >= s.stop_at &&
+                      s.now < s.stop_at + lim.stop_poll_ms + lim.tick_ms,
+                  "round %d: idle stop at %llu (stop %llu)", round, (unsigned long long)s.now,
+                  (unsigned long long)s.stop_at);
             break;
         case ML_FRAME_TIMEOUT:
             CHECK(deadline != 0 && s.now >= deadline && s.now < deadline + lim.tick_ms,
@@ -300,7 +339,9 @@ static void random_schedules(void) {
         /* No spinning: a read that times out waited at least a tick, so
          * the reads are bounded by the frame's time in ticks */
         const uint64_t span = given ? given : lim.partial_ms;
-        CHECK(s.reads <= s.arrivals + 4 + (int)(span / lim.tick_ms),
+        const uint32_t poll = (lim.stop_poll_ms + lim.tick_ms - 1) / lim.tick_ms * lim.tick_ms;
+        const int idle_reads = lim.stop_poll_ms ? (int)(lim.socket_ms / poll) + 2 : 0;
+        CHECK(s.reads <= s.arrivals + 4 + (int)(span / lim.tick_ms) + idle_reads,
               "round %d: %d reads (given %llu, partial %u, tick %u, arrivals %d)", round, s.reads,
               (unsigned long long)given, lim.partial_ms, lim.tick_ms, s.arrivals);
         /* Once begun, the frame never takes longer than its time and a tick */
