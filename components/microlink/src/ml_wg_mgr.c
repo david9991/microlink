@@ -73,6 +73,15 @@ typedef struct {
 #define MAX_PENDING_PROBES 32
 static disco_probe_t pending_probes[MAX_PENDING_PROBES];
 
+/* A peer's slot is freed or reused: its probes are no longer its */
+static void disco_forget_probes(int peer_idx) {
+    for (int i = 0; i < MAX_PENDING_PROBES; i++) {
+        if (pending_probes[i].active && pending_probes[i].peer_index == peer_idx) {
+            pending_probes[i].active = false;
+        }
+    }
+}
+
 /* ============================================================================
  * Base64 Key Encoding (wireguard-lwip API requires base64 keys)
  * ========================================================================== */
@@ -465,6 +474,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
                                                            ml->peers[evict_idx].wg_peer_index));
                 }
                 ml->peers[evict_idx].active = false;
+                disco_forget_probes(evict_idx);
                 idx = evict_idx;
             }
         }
@@ -634,9 +644,11 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     return idx;
 }
 
-/* What goes with a peer the table forgets: its WireGuard peer, and a line */
+/* What goes with a peer the table forgets: its WireGuard peer, its DISCO
+ * probes, and a line */
 static void unlink_peer(void *ctx, int idx) {
     microlink_t *ml = (microlink_t *)ctx;
+    disco_forget_probes(idx);
     /* Remove from wireguard-lwip */
     if (ml->wg_netif && ml->peers[idx].wg_peer_index >= 0) {
         struct netif *netif = (struct netif *)ml->wg_netif;
@@ -973,6 +985,9 @@ static void process_disco_pong(microlink_t *ml, const ml_rx_packet_t *pkt,
         }
 
         ml_peer_t *p = &ml->peers[peer_idx];
+        /* The pong must come from the peer the ping went to: a txid another
+         * peer echoes leaves the probe waiting for its own */
+        if (!p->active || memcmp(p->disco_key, sender_disco_key, 32) != 0) continue;
         uint64_t rtt_ms = now - pending_probes[i].sent_ms;
 
         ESP_LOGI(TAG, "DISCO PONG from %s: RTT=%llu ms (via %s)",
