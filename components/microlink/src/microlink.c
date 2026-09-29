@@ -757,7 +757,11 @@ uint32_t microlink_get_vpn_ip(const microlink_t *ml) {
 }
 
 int microlink_get_peer_count(const microlink_t *ml) {
-    return ml ? ml->peer_count : 0;
+    if (!ml) return 0;
+    ml_peers_lock(ml);
+    const int count = ml->peer_count;
+    ml_peers_unlock(ml);
+    return count;
 }
 
 esp_err_t microlink_get_peer_info(const microlink_t *ml, int index, microlink_peer_info_t *info) {
@@ -789,15 +793,22 @@ esp_err_t microlink_send(microlink_t *ml, uint32_t dest_vpn_ip,
     if (!ml || !data || len == 0 || len > 1400) return ESP_ERR_INVALID_ARG;
     if (ml->state != ML_STATE_CONNECTED) return ESP_ERR_INVALID_STATE;
 
-    /* Find peer by VPN IP */
+    /* Find peer by VPN IP: its key copied under the peer table's lock */
+    uint8_t key[32];
+    bool found = false;
+    ml_peers_lock(ml);
     for (int i = 0; i < ml->peer_count; i++) {
         if (ml->peers[i].vpn_ip == dest_vpn_ip && ml->peers[i].active) {
-            /* TODO: Route through WireGuard tunnel */
-            /* For now, queue via DERP as fallback */
-            return ml_derp_queue_send(ml, ml->peers[i].public_key, data, len);
+            memcpy(key, ml->peers[i].public_key, sizeof(key));
+            found = true;
+            break;
         }
     }
-    return ESP_ERR_NOT_FOUND;
+    ml_peers_unlock(ml);
+    if (!found) return ESP_ERR_NOT_FOUND;
+    /* TODO: Route through WireGuard tunnel */
+    /* For now, queue via DERP as fallback */
+    return ml_derp_queue_send(ml, key, data, len);
 }
 
 /* ============================================================================

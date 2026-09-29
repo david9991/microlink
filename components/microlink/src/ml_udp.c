@@ -209,9 +209,16 @@ microlink_udp_socket_t *microlink_udp_create(microlink_t *ml, uint16_t local_por
     ESP_LOGI(TAG, "UDP socket: %s:%u", ip_buf, sock->local_port);
 
     /* Trigger CallMeMaybe to all peers for WG handshake establishment */
-    for (int i = 0; i < ml->peer_count; i++) {
-        if (ml->peers[i].active) {
-            ml_wg_mgr_send_cmm(ml, ml->peers[i].vpn_ip);
+    for (int i = 0;; i++) {
+        /* Each slot's address read under the peer table's lock */
+        uint32_t vpn_ip = 0;
+        ml_peers_lock(ml);
+        const bool more = i < ml->peer_count;
+        if (more && ml->peers[i].active) vpn_ip = ml->peers[i].vpn_ip;
+        ml_peers_unlock(ml);
+        if (!more) break;
+        if (vpn_ip != 0) {
+            ml_wg_mgr_send_cmm(ml, vpn_ip);
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }

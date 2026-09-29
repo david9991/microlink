@@ -138,7 +138,9 @@ static err_t wg_derp_output_cb(const uint8_t *peer_public_key,
         return ERR_CONN;
     }
 
-    /* Log WG handshake initiations with key and one-time hex dump */
+    /* Log WG handshake initiations with key and one-time hex dump. The name
+     * is read without the peer table's lock (see microlink_t.peers_lock):
+     * lwIP's thread waits on no task's lock, and it only logs. */
     if (len >= 4 && data[0] == 0x01) {
         static int init_dump_count = 0;
         const char *hostname = "?";
@@ -518,7 +520,6 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     p->cached = false;  /* the map's name */
     p->name_cut = update->name_cut;
     p->in_map = true;
-    ml_peers_unlock(ml);
 
     /* Copy endpoints */
     p->endpoint_count = update->endpoint_count;
@@ -538,6 +539,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     p->best_ip = 0;
     p->best_port = 0;
     p->wg_peer_index = -1;
+    ml_peers_unlock(ml);
 
     char ip_str[16];
     microlink_ip_to_str(update->vpn_ip, ip_str);
@@ -594,7 +596,9 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         ML_LWIP_LOCKED(wg_err = wireguardif_add_peer(netif, &wg_peer, &wg_peer_idx));
 
         if (wg_err == ERR_OK && wg_peer_idx != WIREGUARDIF_INVALID_INDEX) {
+            ml_peers_lock(ml);
             p->wg_peer_index = wg_peer_idx;
+            ml_peers_unlock(ml);
 
             /* Verify the WG internal peer key matches what we passed */
             struct wireguard_device *dev = (struct wireguard_device *)netif->state;
@@ -617,7 +621,6 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
             ESP_LOGI(TAG, "WG peer ready (passive), waiting for peer-initiated handshake");
         } else {
             ESP_LOGW(TAG, "wireguardif_add_peer failed: %d", wg_err);
-            p->wg_peer_index = -1;
         }
     }
 
@@ -1029,9 +1032,11 @@ static void process_disco_pong(microlink_t *ml, const ml_rx_packet_t *pkt,
 
         /* If direct reply, update best path */
         if (!pkt->via_derp && pkt->src_ip != 0) {
+            ml_peers_lock(ml);
             p->best_ip = pkt->src_ip;
             p->best_port = pkt->src_port;
             p->has_direct_path = true;
+            ml_peers_unlock(ml);
             p->trust_until_ms = now + ML_DISCO_TRUST_DURATION_MS;
 
             /* Update WireGuard endpoint to direct path.
@@ -1308,8 +1313,10 @@ static void process_wg_packet(microlink_t *ml, const ml_rx_packet_t *pkt) {
  * Reference: tailscale/wgengine/magicsock/magicsock.go (sendCallMeMaybe)
  * ========================================================================== */
 
-static void disco_send_call_me_maybe(microlink_t *ml, int peer_idx) {
-    ml_peer_t *p = &ml->peers[peer_idx];
+/* To a peer by its keys and name: a slot of this task's, or a copy another
+ * task took under the peer table's lock */
+static void disco_send_cmm(microlink_t *ml, const uint8_t *public_key,
+                           const uint8_t *disco_key, const char *hostname) {
 
     /* Build plaintext: [type(1)][version(1)][endpoints(N * 18)] */
     uint8_t plaintext[2 + 3 * 18];  /* Up to 3 endpoints */
@@ -1373,7 +1380,7 @@ static void disco_send_call_me_maybe(microlink_t *ml, int peer_idx) {
     }
 
     if (ep_count == 0) {
-        ESP_LOGW(TAG, "CMM: no endpoints available for %s", p->hostname);
+        ESP_LOGW(TAG, "CMM: no endpoints available for %s", hostname);
         return;
     }
 
@@ -1383,7 +1390,7 @@ static void disco_send_call_me_maybe(microlink_t *ml, int peer_idx) {
 
     uint8_t ciphertext[sizeof(plaintext) + NACL_BOX_MACBYTES];
     nacl_box(ciphertext, plaintext, pt_len, nonce,
-             p->disco_key, ml->disco_private_key);
+             disco_key, ml->disco_private_key);
 
     /* Build packet: magic(6) + disco_pubkey(32) + nonce(24) + ciphertext */
     uint8_t pkt[256];
@@ -1395,21 +1402,64 @@ static void disco_send_call_me_maybe(microlink_t *ml, int peer_idx) {
     memcpy(pkt + pos, ciphertext, ct_len); pos += ct_len;
 
     /* Send via DERP */
-    esp_err_t err = ml_derp_queue_send(ml, p->public_key, pkt, pos);
+    esp_err_t err = ml_derp_queue_send(ml, public_key, pkt, pos);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "CallMeMaybe sent to %s (%d endpoints)", p->hostname, ep_count);
+        ESP_LOGI(TAG, "CallMeMaybe sent to %s (%d endpoints)", hostname, ep_count);
     } else {
-        ESP_LOGW(TAG, "CallMeMaybe send failed for %s: %d", p->hostname, err);
+        ESP_LOGW(TAG, "CallMeMaybe send failed for %s: %d", hostname, err);
     }
+}
+
+static void disco_send_call_me_maybe(microlink_t *ml, int peer_idx) {
+    const ml_peer_t *p = &ml->peers[peer_idx];
+    disco_send_cmm(ml, p->public_key, p->disco_key, p->hostname);
+}
+
+/* What another task takes of a peer's slot: copied under the peer table's
+ * lock, acted on after it is released */
+typedef struct {
+    uint8_t public_key[32];
+    uint8_t disco_key[32];
+    char hostname[sizeof(((ml_peer_t *)0)->hostname)];
+    int wg_peer_index;
+    uint32_t best_ip;
+    uint16_t best_port;
+} peer_copy_t;
+
+/* The active peer with this VPN address, copied; false when there is none */
+static bool copy_peer_by_ip(microlink_t *ml, uint32_t vpn_ip, peer_copy_t *out) {
+    ml_peers_lock(ml);
+    const int idx = find_peer_by_ip(ml, vpn_ip);
+    if (idx >= 0) {
+        const ml_peer_t *p = &ml->peers[idx];
+        memcpy(out->public_key, p->public_key, 32);
+        memcpy(out->disco_key, p->disco_key, 32);
+        memcpy(out->hostname, p->hostname, sizeof(out->hostname));
+        out->wg_peer_index = p->wg_peer_index;
+        out->best_ip = p->best_ip;
+        out->best_port = p->best_port;
+    }
+    ml_peers_unlock(ml);
+    return idx >= 0;
+}
+
+/* Whether WireGuard's peer at `wg_idx` is still the one with this key: an
+ * index copied under the peer table's lock may since have been removed, or
+ * given to another peer. Under lwIP's core lock. */
+static bool wg_index_is_key(struct netif *netif, int wg_idx, const uint8_t *public_key) {
+    const struct wireguard_device *dev = (const struct wireguard_device *)netif->state;
+    if (!dev || wg_idx < 0 || wg_idx >= WIREGUARD_MAX_PEERS) return false;
+    const struct wireguard_peer *wp = &dev->peers[wg_idx];
+    return wp->valid && memcmp(wp->public_key, public_key, 32) == 0;
 }
 
 /* Public wrapper for UDP API to trigger CallMeMaybe.
  * Skip on cellular: our endpoints are behind CGNAT and unreachable. */
 void ml_wg_mgr_send_cmm(microlink_t *ml, uint32_t peer_vpn_ip) {
     if (ml_at_socket_is_ready()) return;  /* cellular: CMM useless */
-    int idx = find_peer_by_ip(ml, peer_vpn_ip);
-    if (idx >= 0) {
-        disco_send_call_me_maybe(ml, idx);
+    peer_copy_t peer;
+    if (copy_peer_by_ip(ml, peer_vpn_ip, &peer)) {
+        disco_send_cmm(ml, peer.public_key, peer.disco_key, peer.hostname);
     }
 }
 
@@ -1430,20 +1480,18 @@ void ml_wg_mgr_send_cmm(microlink_t *ml, uint32_t peer_vpn_ip) {
 esp_err_t ml_wg_mgr_trigger_handshake(microlink_t *ml, uint32_t dest_vpn_ip) {
     if (!ml || !ml->wg_netif) return ESP_ERR_INVALID_STATE;
 
-    int idx = find_peer_by_ip(ml, dest_vpn_ip);
-    if (idx < 0) return ESP_ERR_NOT_FOUND;
-
-    ml_peer_t *p = &ml->peers[idx];
+    peer_copy_t peer;
+    if (!copy_peer_by_ip(ml, dest_vpn_ip, &peer)) return ESP_ERR_NOT_FOUND;
+    const peer_copy_t *p = &peer;
     if (p->wg_peer_index < 0) return ESP_ERR_INVALID_STATE;
-
-    struct netif *netif = (struct netif *)ml->wg_netif;
 
     /* Don't destroy an existing valid session. The netif is read again under
      * lwIP's core lock, which its teardown clears it under: from another
-     * task, the one read before could be gone. */
+     * task, the one read before could be gone; and the WireGuard peer must
+     * still be the one copied. */
     const bool lwip_taken = ml_lwip_lock();
-    netif = (struct netif *)ml->wg_netif;
-    if (!netif) {
+    struct netif *netif = (struct netif *)ml->wg_netif;
+    if (!netif || !wg_index_is_key(netif, p->wg_peer_index, p->public_key)) {
         ml_lwip_unlock(lwip_taken);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1481,31 +1529,25 @@ esp_err_t ml_wg_mgr_trigger_handshake(microlink_t *ml, uint32_t dest_vpn_ip) {
 
 bool ml_wg_mgr_peer_is_up(microlink_t *ml, uint32_t vpn_ip) {
     if (!ml || !ml->wg_netif) return false;
-    int idx = find_peer_by_ip(ml, vpn_ip);
-    if (idx < 0) return false;
-    ml_peer_t *p = &ml->peers[idx];
+    peer_copy_t peer;
+    if (!copy_peer_by_ip(ml, vpn_ip, &peer)) return false;
+    const peer_copy_t *p = &peer;
     if (p->wg_peer_index < 0) return false;
-    struct netif *netif = (struct netif *)ml->wg_netif;
     ip_addr_t cur_ip;
     u16_t cur_port;
     const bool lwip_taken = ml_lwip_lock();
-    netif = (struct netif *)ml->wg_netif;  /* again, under the lock its teardown takes */
-    bool up = netif && wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index, &cur_ip,
-                                              &cur_port) == ERR_OK;
+    /* The netif again, under the lock its teardown takes, and the WireGuard
+     * peer still the one copied: its key is the peer's */
+    struct netif *netif = (struct netif *)ml->wg_netif;
+    bool up = netif && wg_index_is_key(netif, p->wg_peer_index, p->public_key) &&
+              wireguardif_peer_is_up(netif, (u8_t)p->wg_peer_index, &cur_ip,
+                                     &cur_port) == ERR_OK;
     if (up) {
-        /* Verify WG internal peer key matches our DISCO peer */
-        struct wireguard_device *dev = (struct wireguard_device *)netif->state;
-        if (dev && p->wg_peer_index < WIREGUARD_MAX_PEERS) {
-            struct wireguard_peer *wp = &dev->peers[p->wg_peer_index];
-            bool key_match = (memcmp(wp->public_key, p->public_key, 32) == 0);
-            ESP_LOGI(TAG, "WG peer UP: %s wg_idx=%d ep=%s:%u key=%02x%02x%02x%02x %s",
-                     p->hostname, p->wg_peer_index,
-                     ip_addr_isany(&cur_ip) ? "DERP" : ipaddr_ntoa(&cur_ip),
-                     cur_port,
-                     wp->public_key[0], wp->public_key[1],
-                     wp->public_key[2], wp->public_key[3],
-                     key_match ? "KEY_OK" : "KEY_MISMATCH!");
-        }
+        ESP_LOGI(TAG, "WG peer UP: %s wg_idx=%d ep=%s:%u key=%02x%02x%02x%02x",
+                 p->hostname, p->wg_peer_index,
+                 ip_addr_isany(&cur_ip) ? "DERP" : ipaddr_ntoa(&cur_ip),
+                 cur_port, p->public_key[0], p->public_key[1],
+                 p->public_key[2], p->public_key[3]);
     }
     ml_lwip_unlock(lwip_taken);
     return up;
@@ -1559,7 +1601,9 @@ static void disco_periodic_probes(microlink_t *ml) {
         /* Check if direct path trust has expired (always runs, not throttled) */
         if (p->has_direct_path && now > p->trust_until_ms) {
             ESP_LOGI(TAG, "Direct path to %s expired, reverting to DERP", p->hostname);
+            ml_peers_lock(ml);
             p->has_direct_path = false;
+            ml_peers_unlock(ml);
 
             /* Only do DERP fallback + re-probe for allowed peers.
              * Non-allowed peers just get their state cleaned above. */
