@@ -107,6 +107,14 @@ ml_identity_plan_t ml_register_identity_plan(ml_kept_t machine, ml_kept_t wg, ml
                                              ml_kept_t os, const char *stored_os,
                                              const char *configured, const char *unstored);
 
+/**
+ * @brief Whether a plan has anything to save: it makes a key
+ *
+ * A start that read every key saves nothing, and needs no handle that can
+ * write: this is what says so, to the save and to its caller alike.
+ */
+bool ml_register_identity_saves(const ml_identity_plan_t *plan);
+
 /* One write of an identity's save */
 typedef enum {
     ML_SAVE_UNAUTHORIZE,  /* erase the record of an authorisation: it was the old keys' */
@@ -126,8 +134,9 @@ typedef enum {
  * @param plan The plan
  * @param write Makes one write; false when it failed
  * @param ctx Passed to `write`
- * @return true when every write was made — none at all for a plan that makes
- *         no key: a key that was read is never written again
+ * @return true when every write was made — none at all for a plan with
+ *         nothing to save (ml_register_identity_saves): a key that was read
+ *         is never written again
  *
  * The record of an authorisation goes first, then the OS, then each new key,
  * its public half before its private one, then the commit. So whatever a

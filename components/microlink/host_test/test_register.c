@@ -543,6 +543,7 @@ static void an_identity_that_cannot_be_read_is_left_alone(void) {
                         CHECK(!plan.make_machine && !plan.make_wg && !plan.make_disco && !plan.store_os,
                               "%d%d%d%d: a key is made", m, w, d, o);
                         CHECK(!saved && save.made == 0, "%d%d%d%d: %d writes", m, w, d, o, save.made);
+                        CHECK(!ml_register_identity_saves(&plan), "%d%d%d%d: saves", m, w, d, o);
                         failed++;
                         continue;
                     }
@@ -556,8 +557,9 @@ static void an_identity_that_cannot_be_read_is_left_alone(void) {
                     const char *os = m == 1 ? "zephyr" : o == 0 ? "freertos" : "linux";
                     CHECK(strcmp(plan.os, os) == 0, "%d%d%d%d: reports %s", m, w, d, o, plan.os);
                     CHECK(plan.store_os == (m == 1), "%d%d%d%d: stores %d", m, w, d, o, plan.store_os);
-                    /* Every key read: not one write */
+                    /* Every key read: nothing to save, and not one write */
                     const bool all_read = m == 0 && w == 0 && d == 0;
+                    CHECK(ml_register_identity_saves(&plan) == !all_read, "%d%d%d%d: saves", m, w, d, o);
                     CHECK(saved && (save.made == 0) == all_read, "%d%d%d%d: %d writes", m, w, d, o,
                           save.made);
                 }

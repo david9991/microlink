@@ -60,13 +60,14 @@ ml_identity_plan_t ml_register_identity_plan(ml_kept_t machine, ml_kept_t wg, ml
     return plan;
 }
 
+bool ml_register_identity_saves(const ml_identity_plan_t *plan) {
+    return !plan->fail && (plan->make_machine || plan->make_wg || plan->make_disco);
+}
+
 bool ml_register_identity_save(const ml_identity_plan_t *plan,
                                bool (*write)(void *ctx, ml_identity_write_t what), void *ctx) {
-    if (plan->fail) {
-        return false;
-    }
-    if (!plan->make_machine && !plan->make_wg && !plan->make_disco) {
-        return true;
+    if (!ml_register_identity_saves(plan)) {
+        return !plan->fail;
     }
     const struct {
         ml_identity_write_t what;

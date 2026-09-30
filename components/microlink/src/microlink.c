@@ -178,7 +178,7 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
              : os == ML_KEPT_FOUND && stored_os[0] ? "stored with its machine key"
                                   : "none is stored with its machine key (ML_HOSTINFO_OS_UNSTORED)");
 
-    if (!plan.make_machine && !plan.make_wg && !plan.make_disco) {
+    if (!ml_register_identity_saves(&plan)) {
         ESP_LOGI(TAG, "Keys loaded from NVS");
         return ESP_OK;
     }
