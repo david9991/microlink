@@ -70,6 +70,15 @@ int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags);
  */
 const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const char *configured);
 
+/**
+ * @brief An IPv4 address of a node's Addresses: "a.b.c.d", or "a.b.c.d/n"
+ * @param addr The address as the control server writes it
+ * @param ip Where the address goes, host order
+ * @return true when `addr` is one: four decimal octets of at most three
+ *         digits and 255 each, and, if a prefix follows, one of 0 to 32
+ */
+bool ml_register_address_ipv4(const char *addr, uint32_t *ip);
+
 /* One HTTP/2 frame of a run received */
 typedef struct {
     uint8_t type;

@@ -40,6 +40,47 @@ const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const cha
     return ML_HOSTINFO_OS_UNSTORED;
 }
 
+/* A decimal number of 1 to 3 digits at most `max`, from *p; -1 if none */
+static int small_decimal(const char **p, int max) {
+    int value = 0;
+    int digits = 0;
+    while (**p >= '0' && **p <= '9' && digits < 3) {
+        value = value * 10 + (**p - '0');
+        (*p)++;
+        digits++;
+    }
+    return digits == 0 || value > max ? -1 : value;
+}
+
+bool ml_register_address_ipv4(const char *addr, uint32_t *ip) {
+    if (addr == NULL) {
+        return false;
+    }
+    const char *p = addr;
+    uint32_t value = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i > 0 && *p++ != '.') {
+            return false;
+        }
+        const int octet = small_decimal(&p, 255);
+        if (octet < 0) {
+            return false;
+        }
+        value = value << 8 | (uint32_t)octet;
+    }
+    if (*p == '/') {
+        p++;
+        if (small_decimal(&p, 32) < 0) {
+            return false;
+        }
+    }
+    if (*p != '\0') {
+        return false;
+    }
+    *ip = value;
+    return true;
+}
+
 /* HPACK's integer (RFC 7541 5.1) with an n-bit prefix, from *pos; -1 if cut short or too large */
 static long hpack_int(const uint8_t *p, size_t len, size_t *pos, int prefix_bits) {
     if (*pos >= len) return -1;

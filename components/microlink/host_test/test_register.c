@@ -1,7 +1,7 @@
 /*
  * Host tests of what a registration was answered (ml_register.c): the
- * classification of a reply, the :status of its HEADERS frame, and the OS a
- * node's registrations report.
+ * classification of a reply, the :status of its HEADERS frame, the OS a
+ * node's registrations report, and a node's IPv4 address.
  * Run by run.sh with the host's C compiler.
  */
 #include <stdio.h>
@@ -468,8 +468,59 @@ static void hostinfo_os_is_fixed_with_the_keys(void) {
     CHECK(strcmp(ML_HOSTINFO_OS_UNSTORED, "linux") == 0, "the unstored OS");
 }
 
+static void read_every_address(void) {
+    struct {
+        const char *addr;
+        bool ok;
+        uint32_t ip;
+    } cases[] = {
+        {"100.121.110.65/32", true, 0x64796e41},
+        {"100.121.110.65", true, 0x64796e41},
+        {"0.0.0.0/0", true, 0},
+        {"255.255.255.255/32", true, 0xffffffff},
+        {"10.0.0.1/8", true, 0x0a000001},
+        {"fd7a:115c:a1e0::4a39:6e42/128", false, 0},
+        {"", false, 0},
+        {"100.121.110", false, 0},
+        {"100.121.110.65.1", false, 0},
+        {"256.1.1.1", false, 0},
+        {"1.1.1.1000", false, 0},
+        {"1.1.1.1/33", false, 0},
+        {"1.1.1.1/", false, 0},
+        {"1.1.1.1/32x", false, 0},
+        {"1..1.1", false, 0},
+        {"-1.1.1.1", false, 0},
+        {" 1.1.1.1", false, 0},
+        {"1.1.1.1 ", false, 0},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint32_t ip = 0xdeadbeef;
+        const bool ok = ml_register_address_ipv4(cases[i].addr, &ip);
+        CHECK(ok == cases[i].ok, "%s: %d", cases[i].addr, ok);
+        CHECK(ok ? ip == cases[i].ip : ip == 0xdeadbeef, "%s: 0x%08x", cases[i].addr, ip);
+    }
+    CHECK(!ml_register_address_ipv4(NULL, &(uint32_t){0}), "NULL");
+    /* Every prefix of an address with a prefix length, each in a buffer of
+     * its own length: an address only where one ends ("100.121.110.6" and
+     * "100.121.110.65", with and without a prefix length), and a read never
+     * goes past the end */
+    const char *full = "100.121.110.65/32";
+    for (size_t len = 0; len <= strlen(full); len++) {
+        char *cut = malloc(len + 1);
+        memcpy(cut, full, len);
+        cut[len] = '\0';
+        uint32_t ip = 0;
+        const bool ok = ml_register_address_ipv4(cut, &ip);
+        const bool want = len == 13 || len == 14 || len == 16 || len == 17;
+        CHECK(ok == want, "prefix %zu of %s: %d", len, full, ok);
+        CHECK(!ok || ip == (len == 13 ? 0x64796e06u : 0x64796e41u), "prefix %zu: 0x%08x", len, ip);
+        free(cut);
+    }
+}
+
 int main(void) {
     classify_every_reply();
+    read_every_address();
     hostinfo_os_is_fixed_with_the_keys();
     read_every_status();
     read_every_prefix();

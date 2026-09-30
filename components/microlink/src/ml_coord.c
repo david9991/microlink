@@ -123,6 +123,32 @@ static void note_own_domain(microlink_t *ml, const cJSON *node) {
     ml_peers_unlock(ml);
 }
 
+/* A node's tailnet IPv4 address: the first of its Addresses that is one
+ * ("100.64.0.1/32"), host order; 0 when it has none ("Addresses": null) */
+static uint32_t node_ipv4(const cJSON *node) {
+    const cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
+    const cJSON *addr;
+    cJSON_ArrayForEach(addr, addresses) {
+        uint32_t ip;
+        if (cJSON_IsString(addr) && ml_register_address_ipv4(addr->valuestring, &ip)) {
+            return ip;
+        }
+    }
+    return 0;
+}
+
+/* The control server's health messages in a MapResponse: among them why it
+ * serves this node no address */
+static void log_health(const cJSON *map) {
+    const cJSON *health = cJSON_GetObjectItem(map, "Health");
+    const cJSON *msg;
+    cJSON_ArrayForEach(msg, health) {
+        if (cJSON_IsString(msg)) {
+            ESP_LOGW(TAG, "Control server: %s", msg->valuestring);
+        }
+    }
+}
+
 /* Set a socket's receive timeout; 0 ms would mean none, so at least 1 */
 static void sock_rcvtimeo(int sock, uint32_t ms) {
     if (ms == 0) ms = 1;
@@ -1170,18 +1196,12 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     /* Extract our VPN IP from Node.Addresses */
     cJSON *node = cJSON_GetObjectItem(resp_json, "Node");
     if (node) {
-        cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
-        if (addresses && cJSON_GetArraySize(addresses) > 0) {
-            const char *addr = cJSON_GetArrayItem(addresses, 0)->valuestring;
-            if (addr) {
-                unsigned a, b, c, d;
-                if (sscanf(addr, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-                    ml->vpn_ip = (a << 24) | (b << 16) | (c << 8) | d;
-                    char ip_str[16];
-                    microlink_ip_to_str(ml->vpn_ip, ip_str);
-                    ESP_LOGI(TAG, "Our VPN IP: %s", ip_str);
-                }
-            }
+        const uint32_t node_ip = node_ipv4(node);
+        if (node_ip != 0) {
+            ml->vpn_ip = node_ip;
+            char ip_str[16];
+            microlink_ip_to_str(ml->vpn_ip, ip_str);
+            ESP_LOGI(TAG, "Our VPN IP: %s", ip_str);
         }
         /* Parse self-node DERP region — try modern HomeDERP (int) first,
          * then fall back to legacy DERP string (format: "127.3.3.40:REGION") */
@@ -1845,6 +1865,19 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         }
     }
 
+    /* A map that gives this node no address is no session, and nothing of
+     * it is applied: the control server answers so a node it does not serve
+     * (one whose OS changed since it last connected, say — "Addresses":
+     * null, no peers, no DERP map), and says why in Health. */
+    log_health(map_json);
+    const uint32_t node_ip = node_ipv4(cJSON_GetObjectItem(map_json, "Node"));
+    if (node_ip == 0) {
+        ESP_LOGW(TAG, "MapResponse gives this node no tailnet address");
+        cJSON_Delete(map_json);
+        free(resp_buf);
+        return -1;
+    }
+
     /* Extract self-node info */
     {
         cJSON *node = cJSON_GetObjectItem(map_json, "Node");
@@ -1852,19 +1885,10 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             note_own_domain(ml, node);
             /* Extract VPN IP if not already set */
             if (ml->vpn_ip == 0) {
-                cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
-                if (addresses && cJSON_GetArraySize(addresses) > 0) {
-                    const char *addr = cJSON_GetArrayItem(addresses, 0)->valuestring;
-                    if (addr) {
-                        unsigned a, b, c, d;
-                        if (sscanf(addr, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-                            ml->vpn_ip = (a << 24) | (b << 16) | (c << 8) | d;
-                            char ip_str[16];
-                            microlink_ip_to_str(ml->vpn_ip, ip_str);
-                            ESP_LOGI(TAG, "Our VPN IP: %s", ip_str);
-                        }
-                    }
-                }
+                ml->vpn_ip = node_ip;
+                char ip_str[16];
+                microlink_ip_to_str(ml->vpn_ip, ip_str);
+                ESP_LOGI(TAG, "Our VPN IP: %s", ip_str);
             }
             /* Parse self-node DERP region — try modern HomeDERP (int) first,
              * then fall back to legacy DERP string (format: "127.3.3.40:REGION") */
@@ -2333,22 +2357,17 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
     if (update_json) {
         ESP_LOGI(TAG, "Long-poll MapResponse update received");
 
+        log_health(update_json);
+
         /* Update VPN IP if present */
         cJSON *node = cJSON_GetObjectItem(update_json, "Node");
         if (node) {
             note_own_domain(ml, node);
-            cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
-            if (addresses && cJSON_GetArraySize(addresses) > 0) {
-                const char *addr = cJSON_GetArrayItem(addresses, 0)->valuestring;
-                if (addr) {
-                    unsigned a, b, c, d;
-                    if (sscanf(addr, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-                        uint32_t new_ip = (a << 24) | (b << 16) | (c << 8) | d;
-                        if (new_ip != ml->vpn_ip) {
-                            ml->vpn_ip = new_ip;
-                            ESP_LOGI(TAG, "VPN IP updated via long-poll");
-                        }
-                    }
+            {
+                const uint32_t new_ip = node_ipv4(node);
+                if (new_ip != 0 && new_ip != ml->vpn_ip) {
+                    ml->vpn_ip = new_ip;
+                    ESP_LOGI(TAG, "VPN IP updated via long-poll");
                 }
             }
         }
