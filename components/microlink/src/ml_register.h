@@ -158,6 +158,20 @@ bool ml_register_address_ipv4(const char *addr, uint32_t *ip);
  */
 uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void *ctx);
 
+/* The most of a control server's message that is logged, its NUL included */
+#define ML_HEALTH_TEXT_MAX 201
+
+/**
+ * @brief A message of the control server's, fit to log
+ * @param out Where it goes, NUL-terminated
+ * @param size Its size: at most size - 1 bytes of `text` are taken
+ * @param text The message (may be NULL: an empty one)
+ *
+ * Every byte that is not printable ASCII — a control character, an escape,
+ * a byte of a UTF-8 sequence — becomes '?': the text is another host's.
+ */
+void ml_register_printable(char *out, size_t size, const char *text);
+
 /* One HTTP/2 frame of a run received */
 typedef struct {
     uint8_t type;

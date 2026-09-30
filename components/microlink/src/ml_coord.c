@@ -141,15 +141,32 @@ static uint32_t node_ipv4(const cJSON *node) {
     return ml_register_first_ipv4(next_address, &at);
 }
 
+/* The most of the control server's health messages one map has logged */
+#define HEALTH_MESSAGES_MAX 8
+
 /* The control server's health messages in a MapResponse: among them why it
- * serves this node no address */
+ * serves this node no address. Another host's text: each message made
+ * printable and cut to ML_HEALTH_TEXT_MAX, and no more of them than
+ * HEALTH_MESSAGES_MAX. */
 static void log_health(const cJSON *map) {
     const cJSON *health = cJSON_GetObjectItem(map, "Health");
+    if (!cJSON_IsArray(health)) return;
     const cJSON *msg;
+    int logged = 0;
+    int held_back = 0;
     cJSON_ArrayForEach(msg, health) {
-        if (cJSON_IsString(msg)) {
-            ESP_LOGW(TAG, "Control server: %s", msg->valuestring);
+        if (!cJSON_IsString(msg)) continue;
+        if (logged == HEALTH_MESSAGES_MAX) {
+            held_back++;
+            continue;
         }
+        char text[ML_HEALTH_TEXT_MAX];
+        ml_register_printable(text, sizeof(text), msg->valuestring);
+        ESP_LOGW(TAG, "Control server: %s", text);
+        logged++;
+    }
+    if (held_back > 0) {
+        ESP_LOGW(TAG, "Control server: %d more health messages not shown", held_back);
     }
 }
 

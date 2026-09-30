@@ -142,6 +142,18 @@ uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void
     return 0;
 }
 
+void ml_register_printable(char *out, size_t size, const char *text) {
+    if (size == 0) {
+        return;
+    }
+    size_t n = 0;
+    for (; text != NULL && text[n] != '\0' && n + 1 < size; n++) {
+        const char c = text[n];
+        out[n] = c >= ' ' && c <= '~' ? c : '?';
+    }
+    out[n] = '\0';
+}
+
 /* HPACK's integer (RFC 7541 5.1) with an n-bit prefix, from *pos; -1 if cut short or too large */
 static long hpack_int(const uint8_t *p, size_t len, size_t *pos, int prefix_bits) {
     if (*pos >= len) return -1;

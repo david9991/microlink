@@ -689,6 +689,30 @@ static void read_every_list_of_addresses(void) {
     CHECK(ml_register_first_ipv4(list_next, &l) == 0x0a000001 && l.at == 5, "read to %zu", l.at);
 }
 
+static void a_servers_message_is_made_fit_to_log(void) {
+    char out[ML_HEALTH_TEXT_MAX];
+    ml_register_printable(out, sizeof out, "node OS changed since last connection");
+    CHECK(strcmp(out, "node OS changed since last connection") == 0, "plain text: %s", out);
+    ml_register_printable(out, sizeof out, "a\nb\rc\033[2Jd\te\x7f" "f\xc3\xa9g");
+    CHECK(strcmp(out, "a?b?c?[2Jd?e?f??g") == 0, "control and non-ASCII bytes: %s", out);
+    ml_register_printable(out, sizeof out, NULL);
+    CHECK(out[0] == '\0', "none");
+    ml_register_printable(out, sizeof out, "");
+    CHECK(out[0] == '\0', "empty");
+    /* No more than fits, from a buffer of exactly the text's size */
+    char *text = malloc(1000);
+    memset(text, 'x', 999);
+    text[999] = '\0';
+    ml_register_printable(out, sizeof out, text);
+    CHECK(strlen(out) == ML_HEALTH_TEXT_MAX - 1, "cut to %zu", strlen(out));
+    char two[2] = {'z', 'z'};
+    ml_register_printable(two, 1, text);
+    CHECK(two[0] == '\0' && two[1] == 'z', "a buffer of one");
+    ml_register_printable(two, 0, text);
+    CHECK(two[0] == '\0' && two[1] == 'z', "no buffer at all");
+    free(text);
+}
+
 static void read_every_address(void) {
     struct {
         const char *addr;
@@ -756,6 +780,7 @@ int main(void) {
     classify_every_reply();
     read_every_address();
     read_every_list_of_addresses();
+    a_servers_message_is_made_fit_to_log();
     hostinfo_os_is_fixed_with_the_keys();
     an_identity_that_cannot_be_read_is_left_alone();
     a_save_cut_short_leaves_an_identity_the_next_start_completes();
