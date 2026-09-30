@@ -89,7 +89,7 @@ menu "MicroLink V2 Configuration"
 
     config ML_HOSTINFO_OS_UNSTORED
         string "OS a node reports whose keys have none stored"
-        default "linux"
+        default ""
         help
             Hostinfo.OS of a node whose keys were made by a build that did
             not store the OS with them. It must be the OS that build
@@ -97,6 +97,12 @@ menu "MicroLink V2 Configuration"
             "linux" for a build before 3908474, and the build's own
             ML_HOSTINFO_OS ("freertos" by default) for one from 3908474 to
             6167633.
+
+            Empty by default, because no default is right for every node:
+            a node that needs it — keys in NVS, and no OS stored with
+            them — does not start while it is empty, says why, and writes
+            nothing. A node whose keys this build makes, or whose keys have
+            their OS stored, never reads it.
 
             A node that reports the wrong one registers, is authorised, and
             is given no address ("node OS changed since last connection" in

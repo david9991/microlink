@@ -163,6 +163,13 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
 
     const ml_identity_plan_t plan =
         ml_register_identity_plan(machine, wg, disco, os, id->os, configured_os, unstored_os);
+    if (plan.no_unstored_os) {
+        ESP_LOGE(TAG,
+                 "The node's keys have no OS stored with them, and ML_HOSTINFO_OS_UNSTORED is "
+                 "not set: set it to the OS the build that made the keys reported. Nothing is "
+                 "written, and the node does not start");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (plan.fail) {
         ESP_LOGE(TAG,
                  "NVS holds an identity it cannot give (machine key: %s, node key: %s, "

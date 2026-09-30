@@ -186,6 +186,9 @@ static struct {
     char os[64];
 } node;
 
+/* The OS the build names for keys with none stored */
+static const char *unstored_os = "linux";
+
 /* A load into an instance whose OS takes `os_size` bytes */
 static esp_err_t load_sized(size_t os_size) {
     memset(&node, 0xee, sizeof node);
@@ -203,7 +206,7 @@ static esp_err_t load_sized(size_t os_size) {
         .os = node.os,
         .os_size = os_size,
     };
-    const esp_err_t err = ml_identity_load(&id, "freertos", "linux");
+    const esp_err_t err = ml_identity_load(&id, "freertos", unstored_os);
     CHECK(nvs.open_handles == 0, "%d handles left open", nvs.open_handles);
     /* A load that failed may have left no OS: a check that prints it must
      * still find a string */
@@ -472,8 +475,32 @@ static void a_stored_os_is_as_long_as_the_instance_holds_one(void) {
     CHECK(load_sized(8) == ESP_OK && strcmp(node.os, "linux") == 0, "no OS stored: %s", node.os);
 }
 
+static void keys_with_no_os_stored_need_the_build_to_name_one(void) {
+    unstored_os = "";
+    /* An enrolled node with no OS stored: the start fails, says why once,
+     * and nothing is written — nor with a key missing beside it */
+    enrolled();
+    remember();
+    CHECK(load() != ESP_OK && untouched(), "no OS stored, none named: %d writes", nvs.writes);
+    CHECK(errors_logged == 1, "%d errors logged", errors_logged);
+    find(PRIVATE[2])->present = false;
+    remember();
+    CHECK(load() != ESP_OK && untouched(), "and a key missing: %d writes", nvs.writes);
+    /* With its OS stored, the node never asks */
+    enrolled();
+    put(ML_NVS_KEY_OS, "freertos", 9);
+    remember();
+    CHECK(load() == ESP_OK && untouched() && strcmp(node.os, "freertos") == 0, "an OS stored: %s",
+          node.os);
+    /* A new node does not ask either: it reports and stores the build's */
+    empty();
+    CHECK(load() == ESP_OK && holds(ML_NVS_KEY_OS, "freertos", 9), "a new node");
+    unstored_os = "linux";
+}
+
 int main(void) {
     an_enrolled_node_is_read_and_never_written();
+    keys_with_no_os_stored_need_the_build_to_name_one();
     a_stored_os_is_as_long_as_the_instance_holds_one();
     a_stored_public_half_that_is_not_its_private_halfs_is_said();
     what_nvs_cannot_give_fails_the_start_and_nothing_is_written();

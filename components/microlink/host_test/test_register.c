@@ -471,6 +471,10 @@ static void hostinfo_os_is_fixed_with_the_keys(void) {
     CHECK(ml_register_hostinfo_os(false, "", configured, unstored) == unstored, "empty stored");
     CHECK(ml_register_hostinfo_os(false, NULL, "linux", configured) == configured,
           "none stored, keys made by a build that reported freertos");
+    /* ... and nothing, when the build names none: never the build's own OS */
+    CHECK(ml_register_hostinfo_os(false, NULL, configured, NULL) == NULL, "none stored, none named");
+    const char *named = ml_register_hostinfo_os(false, "", configured, "");
+    CHECK(named != NULL && named[0] == '\0', "none stored, an empty one named");
 }
 
 /* ---- the identity NVS keeps ------------------------------------------------ */
@@ -593,6 +597,38 @@ static void an_identity_that_cannot_be_read_is_left_alone(void) {
         }
     }
     CHECK(failed == 81 - 16, "plans that fail: %d", failed);
+
+    /* A machine key with no OS stored needs the build to name one: with
+     * none named the start fails, and makes and stores nothing — whatever
+     * else is missing. Keys made now, and keys with their OS, never ask. */
+    const char *const unnamed[] = {NULL, ""};
+    for (int u = 0; u < 2; u++) {
+        for (int w = 0; w < 2; w++) {
+            for (int d = 0; d < 2; d++) {
+                for (int empty_os = 0; empty_os < 2; empty_os++) {
+                    const ml_identity_plan_t plan = ml_register_identity_plan(
+                        ML_KEPT_FOUND, answers[w], answers[d], empty_os ? ML_KEPT_FOUND : ML_KEPT_ABSENT,
+                        "", "zephyr", unnamed[u]);
+                    CHECK(plan.fail && plan.no_unstored_os, "no OS named: fail %d", plan.fail);
+                    CHECK(!plan.make_machine && !plan.make_wg && !plan.make_disco && !plan.store_os,
+                          "no OS named: a key is made");
+                    CHECK(!ml_register_identity_saves(&plan), "no OS named: saves");
+                }
+            }
+        }
+        const ml_identity_plan_t stored = ml_register_identity_plan(
+            ML_KEPT_FOUND, ML_KEPT_FOUND, ML_KEPT_FOUND, ML_KEPT_FOUND, "freertos", "zephyr", unnamed[u]);
+        CHECK(!stored.fail && !stored.no_unstored_os && strcmp(stored.os, "freertos") == 0,
+              "an OS stored: none need be named");
+        const ml_identity_plan_t made = ml_register_identity_plan(
+            ML_KEPT_ABSENT, ML_KEPT_FOUND, ML_KEPT_ABSENT, ML_KEPT_ABSENT, NULL, "zephyr", unnamed[u]);
+        CHECK(!made.fail && made.make_machine && strcmp(made.os, "zephyr") == 0,
+              "a machine key made now: none need be named");
+    }
+    /* What cannot be read fails for that reason, named OS or not */
+    const ml_identity_plan_t unreadable = ml_register_identity_plan(
+        ML_KEPT_UNREADABLE, ML_KEPT_FOUND, ML_KEPT_FOUND, ML_KEPT_ABSENT, NULL, "zephyr", "");
+    CHECK(unreadable.fail && !unreadable.no_unstored_os, "unreadable, and no OS named");
     /* An OS found empty is none stored */
     const ml_identity_plan_t empty = ml_register_identity_plan(
         ML_KEPT_FOUND, ML_KEPT_FOUND, ML_KEPT_FOUND, ML_KEPT_FOUND, "", "zephyr", "linux");

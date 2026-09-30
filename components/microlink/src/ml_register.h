@@ -59,7 +59,7 @@ int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags);
  * @param stored The OS stored with its keys; NULL or "" when none is
  * @param configured The OS a node with new keys reports (ML_HOSTINFO_OS)
  * @param unstored The OS keys with none stored report
- *        (ML_HOSTINFO_OS_UNSTORED)
+ *        (ML_HOSTINFO_OS_UNSTORED); NULL or "" when the build does not say
  *
  * The control server holds a node to the OS it last connected with: a node
  * that reports another is answered with a map that gives it no address and no
@@ -94,7 +94,9 @@ ml_kept_t ml_register_kept(esp_err_t err, size_t len, size_t want);
 
 /* What a start does about the identity NVS keeps */
 typedef struct {
-    bool fail;          /* something kept cannot be read: the start fails, nothing is written */
+    bool fail;          /* the start fails, and nothing is written: something kept cannot
+                           be read, or (no_unstored_os) the OS cannot be known */
+    bool no_unstored_os;  /* the keys have no OS stored, and the build names none for them */
     bool make_machine;  /* the keys this start makes, and saves */
     bool make_wg;
     bool make_disco;
@@ -112,8 +114,10 @@ typedef struct {
  * A key is made only when NVS holds none. A key, or the OS, that NVS holds
  * and cannot give fails the start: a key made in its place would overwrite
  * an identity a later start may still read, and an OS guessed in its place
- * may not be the one the node was registered with. A start that reads every
- * key makes none, and saves nothing.
+ * may not be the one the node was registered with. For the same reason a
+ * machine key with no OS stored fails the start when the build gives no
+ * `unstored` OS: only the integrator knows what such a node was registered
+ * as. A start that reads every key makes none, and saves nothing.
  */
 ml_identity_plan_t ml_register_identity_plan(ml_kept_t machine, ml_kept_t wg, ml_kept_t disco,
                                              ml_kept_t os, const char *stored_os,

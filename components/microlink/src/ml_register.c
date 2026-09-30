@@ -63,11 +63,18 @@ ml_identity_plan_t ml_register_identity_plan(ml_kept_t machine, ml_kept_t wg, ml
         plan.fail = true;
         return plan;
     }
+    const char *reported = ml_register_hostinfo_os(
+        machine == ML_KEPT_ABSENT, os == ML_KEPT_FOUND ? stored_os : NULL, configured, unstored);
+    if (machine == ML_KEPT_FOUND && (reported == NULL || reported[0] == '\0')) {
+        /* A machine key with no OS stored, and none named for it */
+        plan.fail = true;
+        plan.no_unstored_os = true;
+        return plan;
+    }
     plan.make_machine = machine == ML_KEPT_ABSENT;
     plan.make_wg = wg == ML_KEPT_ABSENT;
     plan.make_disco = disco == ML_KEPT_ABSENT;
-    plan.os = ml_register_hostinfo_os(plan.make_machine, os == ML_KEPT_FOUND ? stored_os : NULL,
-                                      configured, unstored);
+    plan.os = reported;
     plan.store_os = plan.make_machine;
     return plan;
 }

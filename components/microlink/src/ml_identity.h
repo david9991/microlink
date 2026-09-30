@@ -44,10 +44,11 @@ typedef struct {
  * @param id Where it goes
  * @param configured_os The OS a new machine key reports (ML_HOSTINFO_OS)
  * @param unstored_os The OS keys with none stored report
- *        (ML_HOSTINFO_OS_UNSTORED)
+ *        (ML_HOSTINFO_OS_UNSTORED); "" when the build does not say
  * @return ESP_OK with the identity loaded. Anything else fails the start:
- *         NVS holds a key or an OS it cannot give — nothing is written —
- *         or what was made could not be saved whole, and no request may be
+ *         NVS holds a key or an OS it cannot give, or keys with no OS
+ *         stored while `unstored_os` is empty — nothing is written — or
+ *         what was made could not be saved whole, and no request may be
  *         sent on it.
  *
  * The keys are read through a handle that cannot write; one that can is
