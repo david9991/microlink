@@ -98,6 +98,15 @@ typedef enum {
     ML_MAP_OVERSIZED,   /* it did not fit the node's buffers, and could not be read */
 } microlink_map_t;
 
+/* What NVS holds of this device's identity */
+typedef enum {
+    ML_IDENTITY_NONE = 0,    /* no machine key: nothing to start on */
+    ML_IDENTITY_KEPT,        /* a machine key, and no record of an authorisation */
+    ML_IDENTITY_AUTHORIZED,  /* a machine key the control server has authorised */
+    ML_IDENTITY_UNREADABLE,  /* NVS does not say: it does not open, or it holds a machine
+                                key it cannot give. The identity may well be there. */
+} microlink_identity_t;
+
 /* Callback types */
 typedef void (*microlink_state_cb_t)(microlink_t *ml, microlink_state_t state, void *user_data);
 typedef void (*microlink_peer_cb_t)(microlink_t *ml, const microlink_peer_info_t *peer, void *user_data);
@@ -116,6 +125,22 @@ typedef void (*microlink_data_cb_t)(microlink_t *ml, uint32_t src_ip, const uint
  * After reset, next microlink_init() will generate fresh keys.
  */
 esp_err_t microlink_factory_reset(void);
+
+/**
+ * @brief What NVS holds of this device's identity
+ * @return ML_IDENTITY_NONE only when NVS answers that it holds no machine
+ *         key — or no namespace of MicroLink's at all. An NVS that does not
+ *         open, that answers a read of the key with an error, or that holds
+ *         a key of another length, is ML_IDENTITY_UNREADABLE: not "none",
+ *         for a start then makes no key and writes nothing, and the
+ *         identity may be read again by a later start.
+ *
+ * microlink_has_machine_key() and microlink_has_identity() are this answer
+ * as yes or no, and say no for UNREADABLE: a caller that tells a person
+ * there is no identity must ask this first. Reads NVS only: callable with or
+ * without an instance, before microlink_init().
+ */
+microlink_identity_t microlink_get_identity(void);
 
 /**
  * @brief Whether this device holds a node identity the control server has authorised

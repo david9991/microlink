@@ -14,6 +14,7 @@
 #include "esp_random.h"
 #include "nvs.h"
 
+#include "microlink.h"
 #include "ml_register.h"
 #include "x25519.h"
 
@@ -215,4 +216,39 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
     }
     ESP_LOGI(TAG, "Keys saved to NVS");
     return ESP_OK;
+}
+
+microlink_identity_t microlink_get_identity(void) {
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(ML_NVS_NAMESPACE, NVS_READONLY, &nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return ML_IDENTITY_NONE;  /* no namespace yet: nothing was ever kept */
+    }
+    if (err != ESP_OK) {
+        return ML_IDENTITY_UNREADABLE;
+    }
+    /* The machine key's length alone: it is not read */
+    size_t key_len = 0;
+    err = nvs_get_blob(nvs, ML_NVS_KEY_MACHINE_PRI, NULL, &key_len);
+    const ml_kept_t machine = ml_register_kept(err, key_len, 32);
+    uint8_t authorized = 0;
+    const bool recorded =
+        nvs_get_u8(nvs, ML_NVS_KEY_AUTHORIZED, &authorized) == ESP_OK && authorized == 1;
+    nvs_close(nvs);
+    if (machine == ML_KEPT_ABSENT) {
+        return ML_IDENTITY_NONE;
+    }
+    if (machine == ML_KEPT_UNREADABLE) {
+        return ML_IDENTITY_UNREADABLE;
+    }
+    return recorded ? ML_IDENTITY_AUTHORIZED : ML_IDENTITY_KEPT;
+}
+
+bool microlink_has_machine_key(void) {
+    const microlink_identity_t identity = microlink_get_identity();
+    return identity == ML_IDENTITY_KEPT || identity == ML_IDENTITY_AUTHORIZED;
+}
+
+bool microlink_has_identity(void) {
+    return microlink_get_identity() == ML_IDENTITY_AUTHORIZED;
 }

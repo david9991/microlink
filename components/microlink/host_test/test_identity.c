@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "esp_random.h"
+#include "microlink.h"
 #include "ml_identity.h"
 #include "nvs.h"
 #include "x25519.h"
@@ -128,6 +129,10 @@ static esp_err_t get(const char *key, void *out, size_t *len) {
     const entry_t *e = find(key);
     if (e && e->read_err != ESP_OK) return e->read_err;
     if (!e || !e->present) return ESP_ERR_NVS_NOT_FOUND;
+    if (out == NULL) {
+        *len = e->len;  /* with no buffer: its length alone */
+        return ESP_OK;
+    }
     if (e->len > *len) return ESP_ERR_NVS_INVALID_LENGTH;
     memcpy(out, e->data, e->len);
     *len = e->len;
@@ -142,6 +147,12 @@ esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *out, size_t *
 esp_err_t nvs_get_str(nvs_handle_t handle, const char *key, char *out, size_t *len) {
     (void)handle;
     return get(key, out, len);
+}
+
+esp_err_t nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *out) {
+    (void)handle;
+    size_t len = 1;
+    return get(key, out, &len);
 }
 
 /* One write: counted, in order, and failing when it is the one to fail */
@@ -498,8 +509,61 @@ static void keys_with_no_os_stored_need_the_build_to_name_one(void) {
     unstored_os = "linux";
 }
 
+/* What NVS holds of an identity, asked with no instance: the three
+ * answers, and the two questions that are asked of them */
+static void asked(microlink_identity_t want, const char *what) {
+    const int opens = nvs.ro_opens;
+    nvs.rw_opens = nvs.writes = 0;
+    const microlink_identity_t got = microlink_get_identity();
+    CHECK(got == want, "%s: %d", what, got);
+    CHECK(microlink_has_machine_key() == (want == ML_IDENTITY_KEPT || want == ML_IDENTITY_AUTHORIZED),
+          "%s: has a machine key", what);
+    CHECK(microlink_has_identity() == (want == ML_IDENTITY_AUTHORIZED), "%s: has an identity", what);
+    CHECK(nvs.ro_opens > opens && nvs.rw_opens == 0 && nvs.writes == 0 && nvs.open_handles == 0,
+          "%s: not only read", what);
+}
+
+static void what_nvs_holds_of_an_identity(void) {
+    static const uint8_t junk[33] = {7};
+    empty();
+    asked(ML_IDENTITY_NONE, "no namespace");
+    enrolled();
+    asked(ML_IDENTITY_AUTHORIZED, "an enrolled node");
+    /* No record of an authorisation, or a record that is not one */
+    find(ML_NVS_KEY_AUTHORIZED)->present = false;
+    asked(ML_IDENTITY_KEPT, "keys, no record");
+    put(ML_NVS_KEY_AUTHORIZED, "\x00", 1);
+    asked(ML_IDENTITY_KEPT, "keys, a record of 0");
+    find(ML_NVS_KEY_AUTHORIZED)->read_err = ESP_FAIL;
+    asked(ML_IDENTITY_KEPT, "keys, a record that cannot be read");
+    /* No machine key, whatever else is there: nothing to start on */
+    enrolled();
+    find(PRIVATE[0])->present = false;
+    asked(ML_IDENTITY_NONE, "no machine key");
+    /* An NVS that does not say is not "none": the identity may be there */
+    enrolled();
+    nvs.open_ro_err = ESP_ERR_NVS_NOT_INITIALIZED;
+    asked(ML_IDENTITY_UNREADABLE, "NVS does not open");
+    enrolled();
+    find(PRIVATE[0])->read_err = ESP_FAIL;
+    asked(ML_IDENTITY_UNREADABLE, "a read error");
+    enrolled();
+    put(PRIVATE[0], junk, 31);
+    asked(ML_IDENTITY_UNREADABLE, "a machine key cut short");
+    put(PRIVATE[0], junk, 33);
+    asked(ML_IDENTITY_UNREADABLE, "a machine key too long");
+    /* And it agrees with the load: what is unreadable here fails a start,
+     * what is none here makes keys, what is kept here is loaded unwritten */
+    remember();
+    CHECK(load() != ESP_OK && untouched(), "unreadable: the load goes on");
+    enrolled();
+    remember();
+    CHECK(load() == ESP_OK && untouched(), "kept: the load writes");
+}
+
 int main(void) {
     an_enrolled_node_is_read_and_never_written();
+    what_nvs_holds_of_an_identity();
     keys_with_no_os_stored_need_the_build_to_name_one();
     a_stored_os_is_as_long_as_the_instance_holds_one();
     a_stored_public_half_that_is_not_its_private_halfs_is_said();

@@ -1,7 +1,10 @@
 /**
  * @file ml_identity.h
  * @brief A node's keys and the OS it reports, as NVS keeps them: read at
- *        a start, and what NVS holds none of made and saved
+ *        a start, and what NVS holds none of made and saved; and what NVS
+ *        holds of an identity, for a caller with no instance
+ *        (microlink_get_identity, microlink_has_machine_key and
+ *        microlink_has_identity, declared in microlink.h, are defined here)
  *
  * Built and tested on the host too, against an NVS of the test's own
  * (host_test/): it calls nothing of ESP-IDF but NVS, the log and the
