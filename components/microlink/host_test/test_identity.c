@@ -204,6 +204,9 @@ static esp_err_t load(void) {
     };
     const esp_err_t err = ml_identity_load(&id, "freertos", "linux");
     CHECK(nvs.open_handles == 0, "%d handles left open", nvs.open_handles);
+    /* A load that failed may have left no OS: a check that prints it must
+     * still find a string */
+    node.os[sizeof node.os - 1] = '\0';
     return err;
 }
 
