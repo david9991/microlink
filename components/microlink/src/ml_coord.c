@@ -2626,9 +2626,15 @@ void ml_coord_task(void *arg) {
                                     pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
             }
 
-            /* Start streaming long-poll for incremental updates */
+            /* Start streaming long-poll for incremental updates. Without it
+             * there is no session: no peer would ever change again, while
+             * the PINGs kept the watchdog quiet. */
             if (do_start_long_poll(ml, &noise) < 0) {
-                ESP_LOGW(TAG, "Failed to start long-poll (non-fatal)");
+                ESP_LOGW(TAG, "The long-poll did not start: no session, reconnecting");
+                ml_close_sock(ml->coord_sock);
+                ml->coord_sock = -1;
+                state = COORD_RECONNECTING;
+                break;
             }
 
             /* Send initial endpoint update if STUN already completed.
