@@ -142,6 +142,23 @@ uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void
     return 0;
 }
 
+ml_map_address_t ml_register_map_address(bool first, bool listed, uint32_t ip) {
+    if (ip != 0) {
+        return ML_MAP_ADDRESS_GIVEN;
+    }
+    return first || listed ? ML_MAP_ADDRESS_NONE : ML_MAP_ADDRESS_UNCHANGED;
+}
+
+uint32_t ml_register_backoff_ms(int attempts, bool unserved) {
+    const uint32_t first = unserved ? ML_CTRL_BACKOFF_UNSERVED_MS : 1000;
+    const uint32_t max = unserved ? ML_CTRL_BACKOFF_UNSERVED_MAX_MS : ML_CTRL_BACKOFF_MAX_MS;
+    uint32_t wait = first;
+    for (int i = 0; i < attempts && wait < max; i++) {
+        wait *= 2;
+    }
+    return wait < max ? wait : max;
+}
+
 void ml_register_printable(char *out, size_t size, const char *text) {
     if (size == 0) {
         return;

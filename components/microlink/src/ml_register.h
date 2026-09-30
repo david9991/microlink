@@ -158,6 +158,46 @@ bool ml_register_address_ipv4(const char *addr, uint32_t *ip);
  */
 uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void *ctx);
 
+/* What a map says of the node's own address */
+typedef enum {
+    ML_MAP_ADDRESS_GIVEN,      /* the map gives it */
+    ML_MAP_ADDRESS_UNCHANGED,  /* an update that does not speak of it */
+    ML_MAP_ADDRESS_NONE,       /* the map gives the node none: it is not served */
+} ml_map_address_t;
+
+/**
+ * @brief What a map says of the node's own address
+ * @param first The first map of a session, which is the node's whole state;
+ *        else a streaming update, which carries only what changed
+ * @param listed The map has a Node with an Addresses member, whatever it holds
+ * @param ip The first IPv4 address of that list (ml_register_first_ipv4), 0 for none
+ *
+ * A node the control server does not serve — one whose OS changed since it
+ * last connected, say — is sent a Node with "Addresses": null. A first map
+ * without an address is that, however it says it. An update says it only
+ * with a list that has no IPv4 address: an update with no Node, or a Node
+ * with no Addresses, leaves the address as it was.
+ */
+ml_map_address_t ml_register_map_address(bool first, bool listed, uint32_t ip);
+
+/* The longest wait before the control server is connected to again */
+#define ML_CTRL_BACKOFF_MAX_MS          30000
+/* ... and for a node the control server's last map gave no address: the
+ * first wait, and the longest */
+#define ML_CTRL_BACKOFF_UNSERVED_MS     60000
+#define ML_CTRL_BACKOFF_UNSERVED_MAX_MS 900000
+
+/**
+ * @brief How long to wait before connecting to the control server again
+ * @param attempts How many reconnects were made since the last session
+ * @param unserved The control server's last map gave the node no address
+ * @return 1 s doubling to ML_CTRL_BACKOFF_MAX_MS; for an unserved node
+ *         ML_CTRL_BACKOFF_UNSERVED_MS doubling to
+ *         ML_CTRL_BACKOFF_UNSERVED_MAX_MS: nothing the node does changes
+ *         that answer, and each try is a registration
+ */
+uint32_t ml_register_backoff_ms(int attempts, bool unserved);
+
 /* The most of a control server's message that is logged, its NUL included */
 #define ML_HEALTH_TEXT_MAX 201
 

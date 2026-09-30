@@ -90,6 +90,13 @@ typedef enum {
                                        429, ...), or no JSON body; registered again, key kept */
 } microlink_registration_t;
 
+/* What the control server's last map gave this node */
+typedef enum {
+    ML_MAP_NONE = 0,    /* no map read yet */
+    ML_MAP_SERVED,      /* its tailnet address */
+    ML_MAP_UNSERVED,    /* no IPv4 address: the control server does not serve the node */
+} microlink_map_t;
+
 /* Callback types */
 typedef void (*microlink_state_cb_t)(microlink_t *ml, microlink_state_t state, void *user_data);
 typedef void (*microlink_peer_cb_t)(microlink_t *ml, const microlink_peer_info_t *peer, void *user_data);
@@ -224,6 +231,23 @@ bool microlink_is_connected(const microlink_t *ml);
  * then — none, once the caller has emptied the one it was given.
  */
 microlink_registration_t microlink_get_registration(const microlink_t *ml, bool *with_auth_key);
+
+/**
+ * @brief What the control server's last map gave this instance's node
+ * @param ml Handle
+ * @return ML_MAP_NONE until a map is read
+ *
+ * The control server answers a node it does not serve — one that reports
+ * another OS than it last connected with, say — with an authorised
+ * registration, and then a map that gives the node no address, no peers and
+ * no DERP map, the reason in its Health (logged at WARN). That map is
+ * ML_MAP_UNSERVED: the fetch fails — or the session ends, when a streaming
+ * update takes the address away — and the instance registers again, after a
+ * minute, then two, up to fifteen: nothing it does changes the answer. The
+ * answer stands through those reconnects, whatever microlink_get_state()
+ * says meanwhile, until a map gives the node an address.
+ */
+microlink_map_t microlink_get_map(const microlink_t *ml);
 
 /**
  * @brief Get our assigned VPN IP

@@ -141,6 +141,14 @@ static uint32_t node_ipv4(const cJSON *node) {
     return ml_register_first_ipv4(next_address, &at);
 }
 
+/* What a map says of this node's own address (ml_register_map_address);
+ * *ip is the address when it gives one */
+static ml_map_address_t map_address(const cJSON *map, bool first, uint32_t *ip) {
+    const cJSON *node = cJSON_GetObjectItem(map, "Node");
+    *ip = node_ipv4(node);
+    return ml_register_map_address(first, cJSON_GetObjectItem(node, "Addresses") != NULL, *ip);
+}
+
 /* The most of the control server's health messages one map has logged */
 #define HEALTH_MESSAGES_MAX 8
 
@@ -1906,13 +1914,16 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
      * (one whose OS changed since it last connected, say — "Addresses":
      * null, no peers, no DERP map), and says why in Health. */
     log_health(map_json);
-    const uint32_t node_ip = node_ipv4(cJSON_GetObjectItem(map_json, "Node"));
-    if (node_ip == 0) {
-        ESP_LOGW(TAG, "MapResponse gives this node no IPv4 address");
+    uint32_t node_ip;
+    if (map_address(map_json, true, &node_ip) == ML_MAP_ADDRESS_NONE) {
+        ml->map = ML_MAP_UNSERVED;
+        ESP_LOGW(TAG, "MapResponse gives this node no IPv4 address: the control server does "
+                      "not serve it");
         cJSON_Delete(map_json);
         free(resp_buf);
         return -1;
     }
+    ml->map = ML_MAP_SERVED;
 
     /* Extract self-node info */
     {
@@ -2396,17 +2407,27 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
 
         log_health(update_json);
 
-        /* Update VPN IP if present */
+        /* An update whose Node lists no IPv4 address takes the node's away:
+         * the session is over, and the node registers again as one the
+         * control server does not serve. One that does not speak of the
+         * address leaves it. */
+        uint32_t new_ip;
+        const ml_map_address_t address = map_address(update_json, false, &new_ip);
+        if (address == ML_MAP_ADDRESS_NONE) {
+            ml->map = ML_MAP_UNSERVED;
+            ESP_LOGW(TAG, "A map update leaves this node no IPv4 address: the control server "
+                          "no longer serves it");
+            cJSON_Delete(update_json);
+            free(frame_buf);
+            return -1;
+        }
         cJSON *node = cJSON_GetObjectItem(update_json, "Node");
         if (node) {
             note_own_domain(ml, node);
-            {
-                const uint32_t new_ip = node_ipv4(node);
-                if (new_ip != 0 && new_ip != ml->vpn_ip) {
-                    ml->vpn_ip = new_ip;
-                    ESP_LOGI(TAG, "VPN IP updated via long-poll");
-                }
-            }
+        }
+        if (address == ML_MAP_ADDRESS_GIVEN && new_ip != ml->vpn_ip) {
+            ml->vpn_ip = new_ip;
+            ESP_LOGI(TAG, "VPN IP updated via long-poll");
         }
 
         /* Parse peer updates */
@@ -2841,8 +2862,10 @@ void ml_coord_task(void *arg) {
 
         case COORD_RECONNECTING:
             {
-                uint32_t backoff_ms = 1000 << (reconnect_attempts > 4 ? 4 : reconnect_attempts);
-                if (backoff_ms > ML_CTRL_BACKOFF_MAX_MS) backoff_ms = ML_CTRL_BACKOFF_MAX_MS;
+                /* A node the last map gave no address waits minutes, not
+                 * seconds: each try is a registration, answered the same */
+                const uint32_t backoff_ms =
+                    ml_register_backoff_ms(reconnect_attempts, ml->map == ML_MAP_UNSERVED);
 
                 ESP_LOGI(TAG, "Reconnecting in %lu ms (attempt %d)",
                          (unsigned long)backoff_ms, reconnect_attempts + 1);

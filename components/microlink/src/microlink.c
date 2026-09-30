@@ -843,6 +843,10 @@ microlink_registration_t microlink_get_registration(const microlink_t *ml, bool 
     return ml ? ml->registration : ML_REGISTRATION_NONE;
 }
 
+microlink_map_t microlink_get_map(const microlink_t *ml) {
+    return ml ? ml->map : ML_MAP_NONE;
+}
+
 uint32_t microlink_get_vpn_ip(const microlink_t *ml) {
     return ml ? ml->vpn_ip : 0;
 }

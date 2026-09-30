@@ -667,9 +667,9 @@ Zero-copy mode contributed by [dj-oyu](https://github.com/dj-oyu/microlink).
 
 ### Authorised, and no address
 
-The node registers, the control server authorises it, and it never reaches `ML_STATE_CONNECTED`; the log carries `Control server: node OS changed since last connection, was node state copied between devices?` and `MapResponse gives this node no IPv4 address`. The control server holds a node to the OS it last connected with, and this build reports another.
+The node registers, the control server authorises it, and it never reaches `ML_STATE_CONNECTED`; the log carries `Control server: node OS changed since last connection, was node state copied between devices?` and `MapResponse gives this node no IPv4 address`, and `microlink_get_map()` answers `ML_MAP_UNSERVED`. The control server holds a node to the OS it last connected with, and this build reports another.
 
-A node reports the OS stored with its keys. Keys made before the OS was stored have none, and report `ML_HOSTINFO_OS_UNSTORED`, which must be what the build that made them reported: `linux` for a build before 3908474, and the build's own `ML_HOSTINFO_OS` (`freertos` unless it was changed) for one from 3908474 to 6167633. Set `ML_HOSTINFO_OS_UNSTORED` to the other one and start the node again: its keys are not touched, and it needs no new auth key.
+A node reports the OS stored with its keys. Keys made before the OS was stored have none, and report `ML_HOSTINFO_OS_UNSTORED`, which must be what the build that made them reported: `linux` for a build before 3908474, and the build's own `ML_HOSTINFO_OS` (`freertos` unless it was changed) for one from 3908474 to 6167633. Set `ML_HOSTINFO_OS_UNSTORED` to the other one and start the node again: its keys are not touched, and it needs no new auth key. An unserved node registers again after a minute, then two, up to fifteen.
 
 ### `tailscale ping` times out
 - Verify DISCO and DERP are enabled in config

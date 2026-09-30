@@ -1,7 +1,9 @@
 /*
- * Host tests of what a registration was answered (ml_register.c): the
- * classification of a reply, the :status of its HEADERS frame, the OS a
- * node's registrations report, and a node's IPv4 address.
+ * Host tests of what a registration and a map were answered (ml_register.c):
+ * the classification of a reply, the :status of its HEADERS frame, what a
+ * start does about the identity NVS keeps and how it saves one, the OS a
+ * node's registrations report, a node's IPv4 address, what a map says of
+ * it, the wait before a reconnect, and a server's message made fit to log.
  * Run by run.sh with the host's C compiler.
  */
 #include <stdio.h>
@@ -689,6 +691,44 @@ static void read_every_list_of_addresses(void) {
     CHECK(ml_register_first_ipv4(list_next, &l) == 0x0a000001 && l.at == 5, "read to %zu", l.at);
 }
 
+static void what_a_map_says_of_the_address(void) {
+    /* An address is an address, in a first map and in an update */
+    for (int first = 0; first < 2; first++) {
+        for (int listed = 0; listed < 2; listed++) {
+            CHECK(ml_register_map_address(first, listed, 0x64796e41) == ML_MAP_ADDRESS_GIVEN,
+                  "first %d, listed %d: an address", first, listed);
+        }
+    }
+    /* A first map without one: the node is not served, however it is said */
+    CHECK(ml_register_map_address(true, true, 0) == ML_MAP_ADDRESS_NONE, "first map, empty list");
+    CHECK(ml_register_map_address(true, false, 0) == ML_MAP_ADDRESS_NONE, "first map, no list");
+    /* An update: only a list without an address takes it away */
+    CHECK(ml_register_map_address(false, true, 0) == ML_MAP_ADDRESS_NONE, "update, empty list");
+    CHECK(ml_register_map_address(false, false, 0) == ML_MAP_ADDRESS_UNCHANGED, "update, no list");
+}
+
+static void waits_before_a_reconnect(void) {
+    const uint32_t served[] = {1000, 2000, 4000, 8000, 16000, 30000, 30000};
+    for (int i = 0; i < 7; i++) {
+        CHECK(ml_register_backoff_ms(i, false) == served[i], "attempt %d: %u ms", i,
+              (unsigned)ml_register_backoff_ms(i, false));
+    }
+    const uint32_t unserved[] = {60000, 120000, 240000, 480000, 900000, 900000};
+    for (int i = 0; i < 6; i++) {
+        CHECK(ml_register_backoff_ms(i, true) == unserved[i], "unserved, attempt %d: %u ms", i,
+              (unsigned)ml_register_backoff_ms(i, true));
+    }
+    /* The longest waits are reached, and never passed, however many attempts */
+    for (int i = 0; i < 100000; i += 997) {
+        CHECK(ml_register_backoff_ms(i, false) <= ML_CTRL_BACKOFF_MAX_MS, "attempt %d", i);
+        CHECK(ml_register_backoff_ms(i, true) <= ML_CTRL_BACKOFF_UNSERVED_MAX_MS, "unserved %d", i);
+    }
+    CHECK(ml_register_backoff_ms(1 << 30, false) == ML_CTRL_BACKOFF_MAX_MS, "many attempts");
+    CHECK(ml_register_backoff_ms(1 << 30, true) == ML_CTRL_BACKOFF_UNSERVED_MAX_MS,
+          "unserved, many attempts");
+    CHECK(ml_register_backoff_ms(-1, false) == 1000, "no attempt yet");
+}
+
 static void a_servers_message_is_made_fit_to_log(void) {
     char out[ML_HEALTH_TEXT_MAX];
     ml_register_printable(out, sizeof out, "node OS changed since last connection");
@@ -780,6 +820,8 @@ int main(void) {
     classify_every_reply();
     read_every_address();
     read_every_list_of_addresses();
+    what_a_map_says_of_the_address();
+    waits_before_a_reconnect();
     a_servers_message_is_made_fit_to_log();
     hostinfo_os_is_fixed_with_the_keys();
     an_identity_that_cannot_be_read_is_left_alone();

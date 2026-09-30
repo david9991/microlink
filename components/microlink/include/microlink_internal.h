@@ -121,7 +121,6 @@ extern "C" {
 
 /* Control plane timing */
 #define ML_CTRL_WATCHDOG_MS             120000
-#define ML_CTRL_BACKOFF_MAX_MS          30000
 #define ML_CTRL_KEEPALIVE_MS            60000
 
 /* Large tailnet buffer sizes (PSRAM-allocated, configurable via menuconfig) */
@@ -333,6 +332,8 @@ struct microlink_s {
      * (written by coord) */
     volatile microlink_registration_t registration;
     volatile bool registration_with_key;
+    /* What the last map read gave the node (written by coord) */
+    volatile microlink_map_t map;
 
     /* Event group (cross-task synchronization) */
     EventGroupHandle_t events;
