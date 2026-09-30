@@ -7,9 +7,8 @@
  */
 
 #include "microlink_internal.h"
-#include "ml_register.h"
+#include "ml_identity.h"
 #include "esp_log.h"
-#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_mac.h"
 #include "esp_wifi.h"
@@ -28,177 +27,19 @@
 
 static const char *TAG = "microlink";
 
-/* NVS keys */
-#define NVS_NAMESPACE       "microlink"
-#define NVS_KEY_MACHINE_PRI "machine_pri"
-#define NVS_KEY_MACHINE_PUB "machine_pub"
-#define NVS_KEY_WG_PRI      "wg_private"
-#define NVS_KEY_WG_PUB      "wg_public"
-#define NVS_KEY_DISCO_PRI   "disco_pri"
-#define NVS_KEY_DISCO_PUB   "disco_pub"
-#define NVS_KEY_AUTHORIZED  "authorized"   /* u8 1: a registration was authorised */
-#define NVS_KEY_OS          "hostinfo_os"  /* str: the OS the keys report (Hostinfo.OS) */
-
-/* X25519 from x25519.h */
-#include "x25519.h"
-
-/* ============================================================================
- * Key Management (loaded once at init, read-only after)
- * ========================================================================== */
-
-static void generate_keypair(uint8_t *private_key, uint8_t *public_key) {
-    esp_fill_random(private_key, 32);
-    private_key[0] &= 248;
-    private_key[31] &= 127;
-    private_key[31] |= 64;
-    x25519_base(public_key, private_key, 1);
-}
-
-/* What NVS answered a read of something the identity keeps */
-static ml_kept_t kept_of(esp_err_t err) {
-    return err == ESP_OK                  ? ML_KEPT_FOUND
-           : err == ESP_ERR_NVS_NOT_FOUND ? ML_KEPT_ABSENT
-                                          : ML_KEPT_UNREADABLE;
-}
-
-/* Read a private key: found only when it is 32 bytes */
-static ml_kept_t read_private_key(nvs_handle_t nvs, const char *name, uint8_t key[32]) {
-    size_t len = 32;
-    const esp_err_t err = nvs_get_blob(nvs, name, key, &len);
-    return err == ESP_OK && len != 32 ? ML_KEPT_UNREADABLE : kept_of(err);
-}
-
-static const char *kept_str(ml_kept_t kept) {
-    return kept == ML_KEPT_FOUND ? "read" : kept == ML_KEPT_ABSENT ? "none" : "unreadable";
-}
-
-/* A key pair for this start: made, or its public half derived from the
- * private one NVS gave — never read, so a save cut short between the two
- * halves cannot leave a pair that does not match */
-static void key_pair(bool make, uint8_t *private_key, uint8_t *public_key, const char *what) {
-    if (make) {
-        generate_keypair(private_key, public_key);
-        ESP_LOGI(TAG, "Generated new %s key", what);
-    } else {
-        x25519_base(public_key, private_key, 1);
-    }
-}
-
-/* One write of the identity's save (ml_register_identity_save) */
-typedef struct {
-    nvs_handle_t nvs;
-    const microlink_t *ml;
-    ml_identity_write_t failed;  /* the write that failed, and why */
-    esp_err_t err;
-} identity_save_t;
-
-static bool identity_write(void *ctx, ml_identity_write_t what) {
-    identity_save_t *save = ctx;
-    const microlink_t *ml = save->ml;
-    esp_err_t err = ESP_FAIL;
-    switch (what) {
-    case ML_SAVE_UNAUTHORIZE:
-        err = nvs_erase_key(save->nvs, NVS_KEY_AUTHORIZED);
-        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;  /* none was recorded */
-        break;
-    case ML_SAVE_OS:
-        err = nvs_set_str(save->nvs, NVS_KEY_OS, ml->hostinfo_os);
-        break;
-    case ML_SAVE_MACHINE_PUB:
-        err = nvs_set_blob(save->nvs, NVS_KEY_MACHINE_PUB, ml->machine_public_key, 32);
-        break;
-    case ML_SAVE_MACHINE_PRI:
-        err = nvs_set_blob(save->nvs, NVS_KEY_MACHINE_PRI, ml->machine_private_key, 32);
-        break;
-    case ML_SAVE_WG_PUB:
-        err = nvs_set_blob(save->nvs, NVS_KEY_WG_PUB, ml->wg_public_key, 32);
-        break;
-    case ML_SAVE_WG_PRI:
-        err = nvs_set_blob(save->nvs, NVS_KEY_WG_PRI, ml->wg_private_key, 32);
-        break;
-    case ML_SAVE_DISCO_PUB:
-        err = nvs_set_blob(save->nvs, NVS_KEY_DISCO_PUB, ml->disco_public_key, 32);
-        break;
-    case ML_SAVE_DISCO_PRI:
-        err = nvs_set_blob(save->nvs, NVS_KEY_DISCO_PRI, ml->disco_private_key, 32);
-        break;
-    case ML_SAVE_COMMIT:
-        err = nvs_commit(save->nvs);
-        break;
-    }
-    if (err != ESP_OK) {
-        save->failed = what;
-        save->err = err;
-    }
-    return err == ESP_OK;
-}
-
-/* The node's keys and the OS it reports: read from NVS, and what NVS holds
- * none of made and saved (ml_register_identity_plan). The start fails, with
- * nothing written, when NVS holds something it cannot give; and with no
- * request sent when what was made cannot be saved whole. */
+/* The node's keys and the OS it reports, from NVS (ml_identity_load) */
 static esp_err_t load_or_generate_keys(microlink_t *ml) {
-    ml_kept_t machine = ML_KEPT_ABSENT;
-    ml_kept_t wg = ML_KEPT_ABSENT;
-    ml_kept_t disco = ML_KEPT_ABSENT;
-    ml_kept_t os = ML_KEPT_ABSENT;
-    char stored_os[sizeof(ml->hostinfo_os)] = "";
-
-    /* Read through a handle that cannot write. No namespace yet: nothing kept. */
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-    if (err == ESP_OK) {
-        machine = read_private_key(nvs, NVS_KEY_MACHINE_PRI, ml->machine_private_key);
-        wg = read_private_key(nvs, NVS_KEY_WG_PRI, ml->wg_private_key);
-        disco = read_private_key(nvs, NVS_KEY_DISCO_PRI, ml->disco_private_key);
-        size_t os_len = sizeof(stored_os);
-        os = kept_of(nvs_get_str(nvs, NVS_KEY_OS, stored_os, &os_len));
-        nvs_close(nvs);
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGE(TAG, "The keys cannot be read: NVS does not open (%s)", esp_err_to_name(err));
-        return err;
-    }
-
-    const ml_identity_plan_t plan = ml_register_identity_plan(
-        machine, wg, disco, os, stored_os, CONFIG_ML_HOSTINFO_OS, CONFIG_ML_HOSTINFO_OS_UNSTORED);
-    if (plan.fail) {
-        ESP_LOGE(TAG,
-                 "NVS holds an identity it cannot give (machine key: %s, node key: %s, "
-                 "DISCO key: %s, OS: %s): nothing is written, and the node does not start",
-                 kept_str(machine), kept_str(wg), kept_str(disco), kept_str(os));
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    key_pair(plan.make_machine, ml->machine_private_key, ml->machine_public_key, "machine");
-    key_pair(plan.make_wg, ml->wg_private_key, ml->wg_public_key, "WireGuard");
-    key_pair(plan.make_disco, ml->disco_private_key, ml->disco_public_key, "DISCO");
-    snprintf(ml->hostinfo_os, sizeof(ml->hostinfo_os), "%s", plan.os);
-    ESP_LOGI(TAG, "Reports OS \"%s\": %s", ml->hostinfo_os,
-             plan.store_os        ? "the build's, stored with its new machine key"
-             : os == ML_KEPT_FOUND && stored_os[0] ? "stored with its machine key"
-                                  : "none is stored with its machine key (ML_HOSTINFO_OS_UNSTORED)");
-
-    if (!ml_register_identity_saves(&plan)) {
-        ESP_LOGI(TAG, "Keys loaded from NVS");
-        return ESP_OK;
-    }
-
-    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "The new keys are not saved: NVS does not open (%s); the node does not start",
-                 esp_err_to_name(err));
-        return err;
-    }
-    identity_save_t save = {.nvs = nvs, .ml = ml};
-    const bool saved = ml_register_identity_save(&plan, identity_write, &save);
-    nvs_close(nvs);
-    if (!saved) {
-        ESP_LOGE(TAG, "The new keys are not saved: write %d failed (%s); the node does not start",
-                 (int)save.failed, esp_err_to_name(save.err));
-        return save.err;
-    }
-    ESP_LOGI(TAG, "Keys saved to NVS");
-    return ESP_OK;
+    const ml_identity_t identity = {
+        .machine_private = ml->machine_private_key,
+        .machine_public = ml->machine_public_key,
+        .wg_private = ml->wg_private_key,
+        .wg_public = ml->wg_public_key,
+        .disco_private = ml->disco_private_key,
+        .disco_public = ml->disco_public_key,
+        .os = ml->hostinfo_os,
+        .os_size = sizeof(ml->hostinfo_os),
+    };
+    return ml_identity_load(&identity, CONFIG_ML_HOSTINFO_OS, CONFIG_ML_HOSTINFO_OS_UNSTORED);
 }
 
 /* ============================================================================
@@ -207,16 +48,16 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
 
 void ml_identity_authorized(bool authorized) {
     nvs_handle_t nvs;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+    if (nvs_open(ML_NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
         return;
     }
     uint8_t held = 0;
-    const bool was = nvs_get_u8(nvs, NVS_KEY_AUTHORIZED, &held) == ESP_OK && held == 1;
+    const bool was = nvs_get_u8(nvs, ML_NVS_KEY_AUTHORIZED, &held) == ESP_OK && held == 1;
     esp_err_t err = ESP_OK;
     if (authorized && !was) {
-        err = nvs_set_u8(nvs, NVS_KEY_AUTHORIZED, 1);
+        err = nvs_set_u8(nvs, ML_NVS_KEY_AUTHORIZED, 1);
     } else if (!authorized && was) {
-        err = nvs_erase_key(nvs, NVS_KEY_AUTHORIZED);
+        err = nvs_erase_key(nvs, ML_NVS_KEY_AUTHORIZED);
     }
     if (err == ESP_OK && authorized != was) {
         err = nvs_commit(nvs);
@@ -229,25 +70,25 @@ void ml_identity_authorized(bool authorized) {
 
 bool microlink_has_machine_key(void) {
     nvs_handle_t nvs;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    if (nvs_open(ML_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
         return false;
     }
     size_t key_len = 0;
-    const bool has = nvs_get_blob(nvs, NVS_KEY_MACHINE_PRI, NULL, &key_len) == ESP_OK && key_len == 32;
+    const bool has = nvs_get_blob(nvs, ML_NVS_KEY_MACHINE_PRI, NULL, &key_len) == ESP_OK && key_len == 32;
     nvs_close(nvs);
     return has;
 }
 
 bool microlink_has_identity(void) {
     nvs_handle_t nvs;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+    if (nvs_open(ML_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
         return false;
     }
     size_t key_len = 0;
     uint8_t authorized = 0;
-    const bool has = nvs_get_blob(nvs, NVS_KEY_MACHINE_PRI, NULL, &key_len) == ESP_OK &&
+    const bool has = nvs_get_blob(nvs, ML_NVS_KEY_MACHINE_PRI, NULL, &key_len) == ESP_OK &&
                      key_len == 32 &&
-                     nvs_get_u8(nvs, NVS_KEY_AUTHORIZED, &authorized) == ESP_OK &&
+                     nvs_get_u8(nvs, ML_NVS_KEY_AUTHORIZED, &authorized) == ESP_OK &&
                      authorized == 1;
     nvs_close(nvs);
     return has;
@@ -268,7 +109,7 @@ static void *cjson_psram_malloc(size_t size) {
 esp_err_t microlink_factory_reset(void) {
     /* Erase key namespace */
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    esp_err_t err = nvs_open(ML_NVS_NAMESPACE, NVS_READWRITE, &nvs);
     if (err == ESP_OK) {
         err = nvs_erase_all(nvs);
         if (err == ESP_OK) {

@@ -25,6 +25,8 @@ if grep -l 'CONFIG_ML_HOSTINFO_OS' "$src"/*.c "$src"/*.h | grep -v '/microlink\.
     echo "the build's OS is named outside microlink.c: a request must report microlink_t.hostinfo_os" >&2
     exit 1
 fi
+# The identity's load, against an NVS of the test's own
+build test_identity "$src/ml_identity.c" "$src/ml_register.c" "$src/x25519.c" "$here/test_identity.c"
 build test_peer_table "$src/ml_peer_table.c" "$here/test_peer_table.c"
 build test_frame_read "$src/ml_frame_read.c" "$here/test_frame_read.c"
 build test_derp_node "$src/ml_derp_node.c" "$here/test_derp_node.c"

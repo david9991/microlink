@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "ml_register.h"
+#include "nvs.h"
 
 static int failures;
 
@@ -524,6 +525,31 @@ static ml_identity_plan_t plan_for(const nvs_t *n, const char *configured) {
                                      n->os_value, configured, "linux");
 }
 
+static void what_nvs_answered_a_read(void) {
+    /* Read, and whole */
+    CHECK(ml_register_kept(ESP_OK, 32, 32) == ML_KEPT_FOUND, "a key of 32 bytes");
+    CHECK(ml_register_kept(ESP_OK, 9, 0) == ML_KEPT_FOUND, "a string of any length");
+    CHECK(ml_register_kept(ESP_OK, 1, 0) == ML_KEPT_FOUND, "an empty string");
+    /* Read at another length: a key to leave alone, not one to replace */
+    for (size_t len = 0; len < 80; len++) {
+        CHECK((ml_register_kept(ESP_OK, len, 32) == ML_KEPT_FOUND) == (len == 32), "a key of %zu bytes",
+              len);
+        CHECK(ml_register_kept(ESP_OK, len, 32) != ML_KEPT_ABSENT, "a key of %zu bytes is absent", len);
+    }
+    /* Only "not found" is absent: every other error is unreadable, whatever
+     * length came with it */
+    for (esp_err_t err = -2; err < 0x1200; err++) {
+        if (err == ESP_OK) continue;
+        for (size_t want = 0; want <= 32; want += 32) {
+            const ml_kept_t kept = ml_register_kept(err, 32, want);
+            CHECK(kept == (err == ESP_ERR_NVS_NOT_FOUND ? ML_KEPT_ABSENT : ML_KEPT_UNREADABLE),
+                  "error 0x%x: %d", (unsigned)err, kept);
+        }
+    }
+    CHECK(ml_register_kept(ESP_ERR_NVS_INVALID_LENGTH, 33, 32) == ML_KEPT_UNREADABLE, "a key too long");
+    CHECK(ml_register_kept(ESP_ERR_NVS_NOT_INITIALIZED, 0, 32) == ML_KEPT_UNREADABLE, "no NVS");
+}
+
 static void an_identity_that_cannot_be_read_is_left_alone(void) {
     const ml_kept_t answers[] = {ML_KEPT_FOUND, ML_KEPT_ABSENT, ML_KEPT_UNREADABLE};
     int failed = 0;
@@ -826,6 +852,7 @@ int main(void) {
     waits_before_a_reconnect();
     a_servers_message_is_made_fit_to_log();
     hostinfo_os_is_fixed_with_the_keys();
+    what_nvs_answered_a_read();
     an_identity_that_cannot_be_read_is_left_alone();
     a_save_cut_short_leaves_an_identity_the_next_start_completes();
     read_every_status();

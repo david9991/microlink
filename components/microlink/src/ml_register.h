@@ -80,6 +80,18 @@ typedef enum {
     ML_KEPT_UNREADABLE,  /* anything else: an NVS error, or a key of another length */
 } ml_kept_t;
 
+/**
+ * @brief What NVS answered a read, as one of the three
+ * @param err What nvs_get_blob or nvs_get_str returned
+ * @param len The length it read
+ * @param want The length the thing has when it is whole; 0 for any
+ * @return FOUND for ESP_OK and the length wanted; ABSENT for
+ *         ESP_ERR_NVS_NOT_FOUND and nothing else; UNREADABLE for every other
+ *         error, and for a thing read at another length — a key cut short
+ *         is not a key to replace
+ */
+ml_kept_t ml_register_kept(esp_err_t err, size_t len, size_t want);
+
 /* What a start does about the identity NVS keeps */
 typedef struct {
     bool fail;          /* something kept cannot be read: the start fails, nothing is written */

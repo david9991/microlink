@@ -7,6 +7,8 @@
 #include "ml_register.h"
 #include "ml_h2_frame.h"
 
+#include "nvs.h"
+
 #include <string.h>
 
 microlink_registration_t ml_register_classify(const ml_register_reply_t *reply) {
@@ -40,6 +42,16 @@ const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const cha
         return stored;
     }
     return unstored;
+}
+
+ml_kept_t ml_register_kept(esp_err_t err, size_t len, size_t want) {
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return ML_KEPT_ABSENT;
+    }
+    if (err != ESP_OK || (want != 0 && len != want)) {
+        return ML_KEPT_UNREADABLE;
+    }
+    return ML_KEPT_FOUND;
 }
 
 ml_identity_plan_t ml_register_identity_plan(ml_kept_t machine, ml_kept_t wg, ml_kept_t disco,
