@@ -6,19 +6,27 @@ MicroLink v2 has been tested with 1000+ peer tailnets. This document covers conf
 
 ### ML_MAX_PEERS (Kconfig)
 
-Controls max simultaneous WireGuard peers with active tunnels.
+The slots of the peer table, each with its WireGuard tunnel. WireGuard's own peer count follows it.
 
 ```
-idf.py menuconfig → MicroLink V2 → Maximum simultaneous WireGuard peers
+idf.py menuconfig → MicroLink V2 → Slots in the peer table
 ```
+
+A slot takes about 1.2 KB on a 32-bit target, in use or not: 264 bytes of the instance (`ml_peer_t`) and 904 bytes of the WireGuard device (`struct wireguard_peer`).
 
 | Setting | Memory | Use case |
 |---|---|---|
-| 1-4 | ~800B | Most deployments (only talk to 1-4 peers) |
-| 16 | ~3.2KB | Default, small-medium tailnets |
-| 64 | ~12.8KB | Large tailnets with many active peers |
+| 4 | ~4.7KB | A node that talks to a few peers, and keeps them (below) |
+| 16 | ~18.7KB | Default |
+| 64 | ~74.8KB | The most; PSRAM |
 
-**Important**: This is NOT the total tailnet size — it's how many peers have active WG tunnels simultaneously. A 1000-peer tailnet typically only needs `max_peers=4` if only communicating with a few peers.
+### A tailnet larger than the table
+
+The table holds the first `ML_MAX_PEERS` peers it is given: the peers cached in NVS at start, then the peers of the control server's map in the order it lists them. Every peer after that is left out, with a warning (`Peer table full (16 slots), cannot add <name>`): the node has no tunnel to it, accepts none from it, and resolves no name to it (`microlink_resolve`). Which peers those are is the map's order, not a choice. A peer the table holds is updated in place by every later map, so the same peers hold the slots from one map to the next; a slot comes free when its peer leaves the tailnet. A cached peer the first map lacks gives its slot up only when that map ends: until then it can cost a peer of the map its slot.
+
+The peers that must not be left out are **kept**: `microlink_keep_peers()` names up to 8 of them, by address or by name (`config.priority_peer_ip` and `ML_PRIORITY_PEER_IP` name one from the start). A kept peer that finds the table full takes the slot of a peer that is not kept — one the last full map has not listed (a cached peer, say) before one it has, and among those the one heard from or sent to the longest ago — whose tunnel closes (`Peer table full (16 slots): evicting <name> (<ip>) for kept peer <name>`). A kept peer never gives way. Naming a peer the table does not hold while the node runs makes it reconnect to the control server for the full map, where the peer takes its slot; the tunnels stay up meanwhile.
+
+So a node on a tailnet of any size needs as many slots as the peers it keeps, and a few more if the rest matter. A tailnet policy that shows the node only the peers it talks to keeps the others out of its map altogether: they take no slot, and no room in the buffers below.
 
 ### ML_NVS_MAX_PEERS (Kconfig)
 
@@ -77,7 +85,7 @@ This means a 1000-peer tailnet doesn't re-download the full peer list on every l
 
 ## Recommendations
 
-1. **Set `max_peers` to actual need** — not the tailnet size. If your ESP32 only talks to 1 server, set `max_peers=4`.
+1. **Keep the peers you need** — `ML_MAX_PEERS` need not be the tailnet's size: name the peers the node talks to with `microlink_keep_peers()`, and the table leaves others out, never those.
 2. **Use PSRAM** — Required for large tailnets. All ESP32-S3 boards we support have 8MB PSRAM.
 3. **Use reusable auth keys** — Large deployments should use pre-generated reusable keys.
 4. **IMEI-based naming** — For cellular deployments, `microlink_imei_device_name()` generates unique names.

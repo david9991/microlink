@@ -88,32 +88,38 @@ menu "MicroLink V2 Configuration"
             taken from the build.
 
     config ML_MAX_PEERS
-        int "Maximum simultaneous WireGuard peers"
+        int "Slots in the peer table"
         default 16
         range 1 64
         help
-            Maximum number of peers with active WireGuard tunnels. Each peer
-            uses approximately 200 bytes plus endpoint storage.
+            How many peers the peer table holds, each with its WireGuard
+            tunnel: the one limit, WireGuard's own peer count follows it.
+            A slot takes about 1.2 KB on a 32-bit target, in use or not: 264
+            bytes of the instance and 904 bytes of the WireGuard device.
 
-            Most deployments need 1-4 peers (only the peers you actively
-            communicate with). For large tailnets, set this to the actual
-            peer count needed, not the total tailnet size.
+            A tailnet with more peers than slots leaves the rest out — the
+            peers the control server lists after the table filled — and
+            says so in a warning each: no tunnel to them, none from them,
+            and no name to resolve. The peers that must not be among those
+            are kept: microlink_keep_peers(), or the priority peer below.
+            Peers the tailnet's policy hides from this node are not in its
+            map, and take no slot.
 
     config ML_PRIORITY_PEER_IP
         string "Priority peer VPN IP"
         default ""
         help
-            Tailscale VPN IP of the priority peer (e.g., "100.81.222.123").
-            This peer is guaranteed a WireGuard slot even when the peer table
-            is full — the least-recently-used non-priority peer is evicted to
-            make room.
-
-            On large tailnets where the NVS cache fills the peer table at boot
-            before the priority peer arrives from MapResponse, this ensures
-            the peer you care about always gets a slot.
+            Tailscale VPN IP of the priority peer (e.g., "100.81.222.123"):
+            the one peer kept a slot from the start, as
+            microlink_keep_peers() keeps one. When the peer table is full it
+            takes the slot of a peer that is not kept — one the last full
+            map has not listed (a peer cached in NVS, say) before one it
+            has, and among those the one heard from or sent to the longest
+            ago.
 
             Can also be set at runtime via the HTTP config server web UI.
-            Leave empty to disable (all peers treated equally).
+            An application that calls microlink_keep_peers() replaces it.
+            Leave empty for none.
 
     config ML_NVS_MAX_PEERS
         int "Maximum cached peers in NVS"

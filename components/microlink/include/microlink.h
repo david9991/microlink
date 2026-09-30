@@ -37,12 +37,9 @@ typedef struct {
     uint8_t max_peers;          /* Max simultaneous peers (default: 16) */
     int8_t wifi_tx_power_dbm;   /* WiFi TX power in dBm (0 = default 19.5) */
 
-    /* Priority peer: guaranteed a WG slot even when peer table is full.
-     * On large tailnets the NVS cache can fill the peer table at boot
-     * before the priority peer arrives from MapResponse. When the table
-     * is full and a peer matching this IP arrives, the least-recently-used
-     * non-priority peer is evicted to make room.
-     * Set to 0 to disable (all peers treated equally). */
+    /* Priority peer: the one peer kept a slot of the peer table from the
+     * start, as microlink_keep_peers() keeps one — until that is called,
+     * which replaces it. Set to 0 for none. */
     uint32_t priority_peer_ip;  /* VPN IP in host byte order (e.g., microlink_parse_ip("100.x.y.z")) */
 
     /* Optional timing overrides (0 = use defaults) */
@@ -50,6 +47,16 @@ typedef struct {
     uint32_t stun_interval_ms;      /* STUN re-probe interval (default: 23000) */
     uint32_t ctrl_watchdog_ms;      /* Control plane watchdog timeout (default: 120000) */
 } microlink_config_t;
+
+/* The most peers microlink_keep_peers() takes */
+#define ML_KEEP_PEERS_MAX 8
+
+/* A peer the application keeps a slot of the peer table for: by its tailnet
+ * address, or by its name */
+typedef struct {
+    uint32_t vpn_ip;    /* VPN IP in host byte order, or 0: the peer is given by name */
+    char name[64];      /* Read when vpn_ip is 0: a name as microlink_resolve() takes one */
+} microlink_keep_t;
 
 /* Peer info (read-only snapshot) */
 typedef struct {
@@ -311,6 +318,34 @@ const char *microlink_imei_device_name(void);
  * it may be called with lwIP's core lock held (from an lwIP DNS hook, say).
  */
 uint32_t microlink_resolve(const microlink_t *ml, const char *hostname);
+
+/**
+ * @brief Name the peers that keep a slot of the peer table
+ * @param ml Handle
+ * @param peers The peers, copied (may be NULL when count is 0)
+ * @param count How many: at most ML_KEEP_PEERS_MAX
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG for more than that, or for a peer
+ *         with neither an address nor a name that ends within its field
+ *         (nothing changed)
+ *
+ * The peer table has CONFIG_ML_MAX_PEERS slots. A tailnet with more peers
+ * than that leaves the rest out — those the control server lists after the
+ * table filled — with no tunnel, and no name to resolve. A kept peer is
+ * never the one left out while a peer that is not kept holds a slot: when
+ * the table is full it takes the slot of a peer not kept, whose tunnel
+ * closes — one the last full map has not listed before one it has, and
+ * among those the one heard from or sent to the longest ago. A peer kept by
+ * name is the peer microlink_resolve() finds that name at. With every slot
+ * held by a kept peer, a further kept peer is left out like any other.
+ *
+ * The call replaces the set; config.priority_peer_ip is the set until the
+ * first call. It may come before microlink_start() or while the instance
+ * runs: when, after a full map was applied, the new set names a peer the
+ * table does not hold, the instance reconnects to the control server for the
+ * full map — the tunnels stay up — and the peer takes its slot as that map
+ * lists it.
+ */
+esp_err_t microlink_keep_peers(microlink_t *ml, const microlink_keep_t *peers, int count);
 
 /**
  * @brief Whether a full peer map from the control server has been applied

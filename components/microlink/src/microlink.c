@@ -480,6 +480,13 @@ microlink_t *microlink_init(const microlink_config_t *config) {
         return NULL;
     }
 
+    /* The priority peer is the one kept peer, until microlink_keep_peers
+     * names others */
+    if (ml->config.priority_peer_ip != 0) {
+        ml->keep[0].vpn_ip = ml->config.priority_peer_ip;
+        ml->keep_count = 1;
+    }
+
     ESP_LOGI(TAG, "MicroLink v2 initialized (max_peers=%d)", ml->config.max_peers);
     return ml;
 }
@@ -969,6 +976,39 @@ esp_err_t microlink_set_auth_key(microlink_t *ml, const char *auth_key) {
 
 bool microlink_map_applied(const microlink_t *ml) {
     return ml && ml->map_applied;
+}
+
+esp_err_t microlink_keep_peers(microlink_t *ml, const microlink_keep_t *peers, int count) {
+    if (!ml || count < 0 || count > ML_KEEP_PEERS_MAX || (count > 0 && !peers)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* The set as it is kept: an address, or a name and nothing after it */
+    microlink_keep_t keep[ML_KEEP_PEERS_MAX] = {0};
+    for (int i = 0; i < count; i++) {
+        if (peers[i].vpn_ip != 0) {
+            keep[i].vpn_ip = peers[i].vpn_ip;
+            continue;
+        }
+        const size_t len = strnlen(peers[i].name, sizeof(peers[i].name));
+        if (len == 0 || len == sizeof(peers[i].name)) return ESP_ERR_INVALID_ARG;
+        memcpy(keep[i].name, peers[i].name, len);
+    }
+    ml_peers_lock(ml);
+    const bool changed = count != ml->keep_count || memcmp(keep, ml->keep, sizeof(keep)) != 0;
+    memcpy(ml->keep, keep, sizeof(keep));
+    ml->keep_count = count;
+    /* A kept peer the table does not hold comes with a full map only: the
+     * first one, when none was applied yet */
+    const bool fetch = changed && ml->map_applied &&
+                       ml_keep_missing(ml->peers, ml->peer_count, ml->keep, ml->keep_count,
+                                       ml->own_domain);
+    ml_peers_unlock(ml);
+    if (fetch) {
+        ESP_LOGI(TAG, "A kept peer is not in the peer table: fetching the full map again");
+        ml_coord_cmd_t cmd = ML_CMD_FORCE_RECONNECT;
+        xQueueSend(ml->coord_cmd_queue, &cmd, pdMS_TO_TICKS(100));
+    }
+    return ESP_OK;
 }
 
 uint64_t ml_get_time_ms(void) {

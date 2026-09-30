@@ -1,7 +1,7 @@
 /**
  * @file ml_peer_table.h
- * @brief The peer table's state, and what a full map and a name do to it:
- *        pure functions, built and tested on the host too
+ * @brief The peer table's state, and what a full map, a name and a full
+ *        table do to it: pure functions, built and tested on the host too
  *
  * No ESP-IDF call here: host_test/ builds these with the host's compiler.
  * The table itself is owned by the WG manager task.
@@ -12,6 +12,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "microlink.h"
 
 #define ML_MAX_ENDPOINTS        8
 
@@ -137,3 +139,48 @@ bool ml_peers_map_end(ml_peer_t *peers, int *count, bool complete);
  */
 uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_domain,
                           const char *name);
+
+/**
+ * @brief Whether a peer is one of the kept ones (microlink_keep_peers)
+ * @param keep The kept peers
+ * @param keep_count How many
+ * @param own_domain As ml_peers_resolve takes it
+ * @param vpn_ip The peer's address
+ * @param hostname Its name
+ * @param named Its name is the map's, whole: a cached peer's name and a cut
+ *        one stand for no kept name
+ *
+ * A peer kept by address is the peer at that address. A peer kept by name
+ * is the peer ml_peers_resolve would find that name at: its full name, or
+ * its first label within the board's own tailnet.
+ */
+bool ml_keep_has(const microlink_keep_t *keep, int keep_count, const char *own_domain,
+                 uint32_t vpn_ip, const char *hostname, bool named);
+
+/**
+ * @brief The slot a peer new to the table takes
+ * @param peers The table
+ * @param slots How many slots it has, in use or not
+ * @param keep The kept peers
+ * @param keep_count How many
+ * @param own_domain As ml_peers_resolve takes it
+ * @param kept Whether the new peer is a kept one (ml_keep_has)
+ * @return The first free slot. With none free, and only for a kept peer,
+ *         the slot of a peer not kept, which the caller evicts: one the
+ *         last full map has not listed (a cached peer, a peer of an earlier
+ *         map, or one the map being applied has not come to) before one it
+ *         has, and among those the one whose last pong or last packet sent
+ *         is the oldest — the first of several as old. Else -1: the peer is
+ *         left out.
+ */
+int ml_peers_slot(const ml_peer_t *peers, int slots, const microlink_keep_t *keep,
+                  int keep_count, const char *own_domain, bool kept);
+
+/**
+ * @brief Whether a kept peer has no slot: an address no peer of the table
+ *        has, or a name ml_peers_resolve finds at none
+ * @param peers The table
+ * @param count Its count of slots in use
+ */
+bool ml_keep_missing(const ml_peer_t *peers, int count, const microlink_keep_t *keep,
+                     int keep_count, const char *own_domain);

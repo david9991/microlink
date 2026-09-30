@@ -69,6 +69,26 @@ static bool same_name(const char *a, const char *b, size_t len) {
     return true;
 }
 
+/* Whether a peer's whole name `hostname` answers to `name` (`name_len`
+ * characters): the rule ml_peers_resolve documents */
+static bool name_is(const char *hostname, size_t hostname_size, const char *own_domain,
+                    const char *name, size_t name_len) {
+    /* A name with no domain cannot be placed in the board's own tailnet
+     * or in another: it answers for nothing, by itself or as a label */
+    const char *dot = strchr(hostname, '.');
+    if (!dot || dot[1] == '\0') return false;
+
+    /* 1. Its full name, any case */
+    if (same_name(hostname, name, hostname_size)) return true;
+
+    /* 2. Its first label ("npc1" for "npc1.tail12345.ts.net"), when the
+     * rest of its name is the board's own tailnet: never a node shared in */
+    const size_t short_len = (size_t)(dot - hostname);
+    return own_domain && own_domain[0] != '\0' && name_len == short_len &&
+           same_name(hostname, name, short_len) &&
+           same_name(dot + 1, own_domain, hostname_size);
+}
+
 uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_domain,
                           const char *name) {
     if (!name || name[0] == '\0') return 0;
@@ -78,25 +98,70 @@ uint32_t ml_peers_resolve(const ml_peer_t *peers, int count, const char *own_dom
         /* A cached peer's name is cut, and so is one that did not fit: it
          * could stand for another peer */
         if (!p->active || p->cached || p->name_cut) continue;
-
-        /* A name with no domain cannot be placed in the board's own tailnet
-         * or in another: it answers for nothing, by itself or as a label */
-        const char *dot = strchr(p->hostname, '.');
-        if (!dot || dot[1] == '\0') continue;
-
-        /* 1. Its full name, any case */
-        if (same_name(p->hostname, name, sizeof(p->hostname))) {
-            return p->vpn_ip;
-        }
-
-        /* 2. Its first label ("npc1" for "npc1.tail12345.ts.net"), when the
-         * rest of its name is the board's own tailnet: never a node shared in */
-        const size_t short_len = (size_t)(dot - p->hostname);
-        if (own_domain && own_domain[0] != '\0' && name_len == short_len &&
-            same_name(p->hostname, name, short_len) &&
-            same_name(dot + 1, own_domain, sizeof(p->hostname))) {
+        if (name_is(p->hostname, sizeof(p->hostname), own_domain, name, name_len)) {
             return p->vpn_ip;
         }
     }
     return 0;
+}
+
+bool ml_keep_has(const microlink_keep_t *keep, int keep_count, const char *own_domain,
+                 uint32_t vpn_ip, const char *hostname, bool named) {
+    for (int i = 0; i < keep_count; i++) {
+        const microlink_keep_t *k = &keep[i];
+        if (k->vpn_ip != 0) {
+            if (k->vpn_ip == vpn_ip) return true;
+        } else if (named && k->name[0] != '\0' &&
+                   name_is(hostname, sizeof(((ml_peer_t *)0)->hostname), own_domain, k->name,
+                           strlen(k->name))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* When the peer last answered a ping or was sent a packet */
+static uint64_t last_activity_ms(const ml_peer_t *p) {
+    return p->last_pong_recv_ms > p->last_send_ms ? p->last_pong_recv_ms : p->last_send_ms;
+}
+
+int ml_peers_slot(const ml_peer_t *peers, int slots, const microlink_keep_t *keep,
+                  int keep_count, const char *own_domain, bool kept) {
+    for (int i = 0; i < slots; i++) {
+        if (!peers[i].active) return i;
+    }
+    if (!kept) return -1;
+    int gives_way = -1;
+    for (int i = 0; i < slots; i++) {
+        const ml_peer_t *p = &peers[i];
+        if (ml_keep_has(keep, keep_count, own_domain, p->vpn_ip, p->hostname,
+                        !p->cached && !p->name_cut)) {
+            continue;
+        }
+        if (gives_way < 0) {
+            gives_way = i;
+            continue;
+        }
+        const ml_peer_t *g = &peers[gives_way];
+        if (p->in_map != g->in_map ? !p->in_map : last_activity_ms(p) < last_activity_ms(g)) {
+            gives_way = i;
+        }
+    }
+    return gives_way;
+}
+
+bool ml_keep_missing(const ml_peer_t *peers, int count, const microlink_keep_t *keep,
+                     int keep_count, const char *own_domain) {
+    for (int k = 0; k < keep_count; k++) {
+        if (keep[k].vpn_ip == 0) {
+            if (ml_peers_resolve(peers, count, own_domain, keep[k].name) == 0) return true;
+            continue;
+        }
+        bool held = false;
+        for (int i = 0; i < count && !held; i++) {
+            held = peers[i].active && peers[i].vpn_ip == keep[k].vpn_ip;
+        }
+        if (!held) return true;
+    }
+    return false;
 }

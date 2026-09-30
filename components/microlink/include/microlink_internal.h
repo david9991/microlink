@@ -392,10 +392,16 @@ struct microlink_s {
     /* Peers (owned exclusively by wg_mgr task) */
     ml_peer_t peers[ML_MAX_PEERS];
     int peer_count;
+    /* The peers that keep a slot of the table (microlink_keep_peers):
+     * written by the caller's task, read by the WG manager when a new peer
+     * needs a slot — both under peers_lock */
+    microlink_keep_t keep[ML_KEEP_PEERS_MAX];
+    int keep_count;
     /* Guards what another task reads of the peer table — a slot's address,
      * name, keys, active and cached flags, WireGuard index, best endpoint
-     * and direct path, peer_count — and own_domain: their writers (the WG
-     * manager, coord for own_domain) change them under it, and every reader
+     * and direct path, peer_count — and own_domain and the kept peers: their
+     * writers (the WG manager, coord for own_domain, microlink_keep_peers
+     * for the kept peers) change them under it, and every reader
      * in another task (microlink_resolve, microlink_get_peer_info,
      * microlink_get_peer_count, microlink_send, ml_wg_mgr_send_cmm,
      * ml_wg_mgr_trigger_handshake, ml_wg_mgr_peer_is_up, the UDP socket's

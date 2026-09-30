@@ -1,6 +1,7 @@
 /*
  * Host tests of the peer table's pure logic (ml_peer_table.c): what a full
- * map's BEGIN and END do to it, and which peer a name resolves to.
+ * map's BEGIN and END do to it, which peer a name resolves to, and which
+ * slot a peer takes in a full table.
  * Run by run.sh with the host's C compiler.
  */
 #include <ctype.h>
@@ -368,12 +369,226 @@ static void random_map_ends(void) {
     }
 }
 
+/* ---- the kept peers, and a full table ------------------------------------ */
+
+static microlink_keep_t keep[ML_KEEP_PEERS_MAX];
+static int keeps;
+
+static void keep_address(uint32_t ip) {
+    memset(&keep[keeps], 0, sizeof keep[keeps]);
+    keep[keeps++].vpn_ip = ip;
+}
+
+static void keep_name(const char *name) {
+    memset(&keep[keeps], 0, sizeof keep[keeps]);
+    strncpy(keep[keeps++].name, name, sizeof keep[0].name - 1);
+}
+
+static bool kept(uint32_t ip, const char *name, bool named) {
+    return ml_keep_has(keep, keeps, own, ip, name, named);
+}
+
+static int slot(bool is_kept) {
+    return ml_peers_slot(peers, PEERS, keep, keeps, own, is_kept);
+}
+
+static void kept_peers(void) {
+    keeps = 0;
+    CHECK(!kept(0x64400001, "control-host.tail1.ts.net", true), "nothing kept");
+    keep_address(0x64400001);
+    keep_name("laptop");
+    keep_name("shared-box.other.ts.net");
+    keep_name("Build.Tail1.ts.net");
+    CHECK(kept(0x64400001, "anything.tail1.ts.net", true), "by address");
+    CHECK(kept(0x64400001, "cut", false), "by address, whatever its name");
+    CHECK(!kept(0x64400002, "anything.tail1.ts.net", true), "another address");
+    CHECK(kept(0x64400009, "laptop.tail1.ts.net", true), "by first label, own tailnet");
+    CHECK(kept(0x64400009, "LAPTOP.tail1.ts.net", true), "by first label, any case");
+    CHECK(!kept(0x64400009, "laptop.other.ts.net", true), "first label of a shared-in node");
+    CHECK(!kept(0x64400009, "laptop2.tail1.ts.net", true), "a longer label");
+    CHECK(!kept(0x64400009, "laptop", true), "a name with no domain");
+    CHECK(!kept(0x64400009, "laptop.tail1.ts.net", false), "a cut or cached name keeps nothing");
+    CHECK(kept(0x64500002, "shared-box.other.ts.net", true), "by full name, another tailnet");
+    CHECK(kept(0x64400007, "build.tail1.ts.net", true), "by full name, any case");
+    CHECK(!kept(0x64400007, "build.tail1.ts.net.x", true), "a longer name");
+    /* A peer kept by name is the peer the name resolves to */
+    reset();
+    peer(0, "laptop.tail1.ts.net", 0x64400009, false);
+    peer(1, "laptop.other.ts.net", 0x64500009, false);
+    for (int i = 0; i < count; i++) {
+        CHECK(kept(peers[i].vpn_ip, peers[i].hostname, true) ==
+                  (ml_peers_resolve(peers, count, own, "laptop") == peers[i].vpn_ip),
+              "slot %d: kept by name as resolved", i);
+    }
+
+    /* Room: the first free slot, kept or not */
+    reset();
+    peer(0, "a.tail1.ts.net", 0x64400010, false);
+    peer(2, "c.tail1.ts.net", 0x64400012, false);
+    CHECK(slot(false) == 1 && slot(true) == 1, "the first free slot");
+    CHECK(!ml_keep_missing(peers, count, keep, 0, own), "nothing kept, nothing missing");
+    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "kept peers the table lacks");
+
+    /* A full table: a peer not kept is left out; a kept one takes the slot
+     * of a peer not kept — never a kept peer's */
+    reset();
+    peer(0, "control-host.tail1.ts.net", 0x64400001, false);  /* kept by address */
+    peer(1, "laptop.tail1.ts.net", 0x64400009, false);        /* kept by name */
+    for (int i = 2; i < PEERS; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "n%d.tail1.ts.net", i);
+        peer(i, name, 0x64400020 + (uint32_t)i, false);
+        peers[i].in_map = true;
+        peers[i].last_send_ms = 1000;
+    }
+    peers[0].in_map = peers[1].in_map = true;
+    CHECK(slot(false) == -1, "full: a peer not kept is left out");
+    CHECK(slot(true) == 2, "full: the first of those as old gives way");
+    peers[5].last_send_ms = 10;
+    peers[5].last_pong_recv_ms = 900;
+    peers[6].last_send_ms = 800;
+    CHECK(slot(true) == 6, "the one heard from and sent to the longest ago: %d", slot(true));
+    peers[6].last_pong_recv_ms = 950;
+    CHECK(slot(true) == 5, "a pong counts as much as a packet sent: %d", slot(true));
+    peers[7].in_map = false;
+    CHECK(slot(true) == 7, "one the map has not listed goes first: %d", slot(true));
+    peers[3].in_map = false;
+    peers[3].last_send_ms = 2000;
+    peers[7].last_send_ms = 3000;
+    CHECK(slot(true) == 3, "of two not listed, the older: %d", slot(true));
+    peers[0].in_map = peers[1].in_map = false;
+    peers[0].last_send_ms = peers[1].last_send_ms = 0;
+    CHECK(slot(true) == 3, "a kept peer never gives way, unlisted and idle as it is: %d", slot(true));
+    /* A cached peer has a cut name: it is kept by its address only */
+    peers[1].cached = true;
+    CHECK(slot(true) == 1, "a cached peer's name keeps nothing: %d", slot(true));
+    peers[0].cached = true;
+    CHECK(slot(true) == 1, "a cached peer kept by address stays: %d", slot(true));
+    peers[1].cached = false;
+    peers[1].name_cut = true;
+    CHECK(slot(true) == 1, "nor does a cut name: %d", slot(true));
+    peers[1].name_cut = false;
+
+    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "two kept names have no peer");
+    peer(2, "shared-box.other.ts.net", 0x64500002, false);
+    peer(3, "build.tail1.ts.net", 0x64400007, false);
+    CHECK(!ml_keep_missing(peers, count, keep, keeps, own), "every kept peer has a slot");
+    peers[0].active = false;
+    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "the kept address has none");
+    peers[0].active = true;
+    peers[3].cached = true;
+    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "a cached peer answers to no name");
+    peers[3].cached = false;
+
+    /* Every slot a kept peer's: a further kept peer is left out too */
+    keeps = 0;
+    for (int i = 0; i < PEERS; i++) keep_address(peers[i].vpn_ip);
+    CHECK(slot(true) == -1, "all kept: left out");
+    keeps = 0;
+}
+
+/* A full map of more peers than the table has slots, applied in a random
+ * order as the WG manager applies one: every kept peer of the map ends with
+ * a slot, whatever the order, the cache and the peers of the map before */
+static void random_full_tables(void) {
+    enum { NODES = 24 };
+    int evictions = 0;
+    int left_out = 0;
+    for (int round = 0; round < 20000; round++) {
+        reset();
+        keeps = 0;
+        /* The tailnet: node i is at address BASE + i, named n<i> */
+        const uint32_t base = 0x64400100;
+        int order[NODES];
+        const int nodes = PEERS + 1 + (int)(next() % (NODES - PEERS));
+        for (int i = 0; i < nodes; i++) order[i] = i;
+        for (int i = nodes - 1; i > 0; i--) {
+            const int j = (int)(next() % (uint32_t)(i + 1));
+            const int t = order[i];
+            order[i] = order[j];
+            order[j] = t;
+        }
+        /* Fewer kept peers than slots, by address or by name */
+        bool node_kept[NODES] = {false};
+        const int want = (int)(next() % PEERS);
+        while (keeps < want) {
+            const int n = (int)(next() % (uint32_t)nodes);
+            if (node_kept[n]) continue;
+            node_kept[n] = true;
+            if (next() & 1) {
+                keep_address(base + (uint32_t)n);
+            } else {
+                char name[32];
+                snprintf(name, sizeof name, next() & 1 ? "n%d" : "N%d.tail1.ts.net", n);
+                keep_name(name);
+            }
+        }
+        /* The table before the map: cached peers, and peers of an earlier
+         * map, some of them nodes no longer in the tailnet */
+        const int before = (int)(next() % (PEERS + 1));
+        for (int i = 0; i < before; i++) {
+            char name[32];
+            const int n = (int)(next() % (NODES + 8));
+            const bool cached = next() & 1;
+            snprintf(name, sizeof name, cached ? "n%d" : "n%d.tail1.ts.net", n);
+            bool there = false;
+            for (int j = 0; j < i; j++) there |= peers[j].vpn_ip == base + (uint32_t)n;
+            if (there) continue;
+            peer(i, name, base + (uint32_t)n, cached);
+            peers[i].in_map = !cached;
+            peers[i].last_send_ms = next() % 5000;
+        }
+        ml_peers_map_begin(peers, count);
+        for (int k = 0; k < nodes; k++) {
+            const int n = order[k];
+            const uint32_t ip = base + (uint32_t)n;
+            char name[32];
+            snprintf(name, sizeof name, "n%d.tail1.ts.net", n);
+            int idx = -1;
+            for (int i = 0; i < count; i++) {
+                if (peers[i].active && peers[i].vpn_ip == ip) idx = i;
+            }
+            if (idx < 0) {
+                idx = slot(kept(ip, name, true));
+                if (idx < 0) {
+                    CHECK(!node_kept[n], "round %d: kept node %d left out", round, n);
+                    left_out++;
+                    continue;
+                }
+                if (peers[idx].active) {
+                    const int gone = (int)(peers[idx].vpn_ip - base);
+                    CHECK(node_kept[n], "round %d: node %d, not kept, took a slot in use", round, n);
+                    CHECK(gone >= nodes || !node_kept[gone] || peers[idx].cached,
+                          "round %d: kept node %d gave way", round, gone);
+                    evictions++;
+                }
+            }
+            peer(idx, name, ip, false);
+            peers[idx].in_map = true;
+        }
+        CHECK(end_map(true), "round %d: applied", round);
+        for (int n = 0; n < nodes; n++) {
+            bool held = false;
+            for (int i = 0; i < count; i++) {
+                held |= peers[i].active && peers[i].vpn_ip == base + (uint32_t)n;
+            }
+            CHECK(!node_kept[n] || held, "round %d: kept node %d has no slot", round, n);
+        }
+        CHECK(!ml_keep_missing(peers, count, keep, keeps, own), "round %d: a kept peer missing", round);
+    }
+    /* The sweep reaches both ends of the rule */
+    CHECK(evictions > 5000 && left_out > 20000, "evictions %d, left out %d", evictions, left_out);
+    keeps = 0;
+}
+
 int main(void) {
     fqdns();
     random_names();
     random_map_ends();
     full_maps();
     names();
+    kept_peers();
+    random_full_tables();
     if (failures) {
         printf("%d failed\n", failures);
         return 1;

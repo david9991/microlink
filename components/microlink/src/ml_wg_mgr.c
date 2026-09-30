@@ -464,54 +464,38 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
      * writes the table — and written under it: a reader sees the old peer
      * or the new one, never a mix. */
     int idx = find_peer_by_key(ml, update->public_key);
-    if (idx >= 0) {
+    const bool known = idx >= 0;
+    if (known) {
         ESP_LOGI(TAG, "Updating existing peer %s (idx=%d)", update->hostname, idx);
     } else {
-        /* Find free slot */
-        idx = -1;
-        for (int i = 0; i < ML_MAX_PEERS; i++) {
-            if (!ml->peers[i].active) {
-                idx = i;
-                break;
-            }
-        }
-
-        /* Peer table full — evict LRU non-priority peer if incoming peer is priority */
-        if (idx < 0 && ml->config.priority_peer_ip != 0 &&
-            update->vpn_ip == ml->config.priority_peer_ip) {
-            uint64_t oldest_ms = UINT64_MAX;
-            int evict_idx = -1;
-            for (int i = 0; i < ML_MAX_PEERS; i++) {
-                if (!ml->peers[i].active) continue;
-                if (ml->peers[i].vpn_ip == ml->config.priority_peer_ip) continue;
-                uint64_t last_activity = ml->peers[i].last_send_ms;
-                if (ml->peers[i].last_pong_recv_ms > last_activity)
-                    last_activity = ml->peers[i].last_pong_recv_ms;
-                if (last_activity < oldest_ms) {
-                    oldest_ms = last_activity;
-                    evict_idx = i;
-                }
-            }
-            if (evict_idx >= 0) {
-                char evict_ip[16];
-                microlink_ip_to_str(ml->peers[evict_idx].vpn_ip, evict_ip);
-                ESP_LOGW(TAG, "Evicting LRU peer %s (%s) for priority peer %s",
-                         ml->peers[evict_idx].hostname, evict_ip, update->hostname);
-                /* Its WireGuard peer goes before the peer table's lock is
-                 * taken: nothing is waited on under that lock */
-                if (ml->peers[evict_idx].wg_peer_index >= 0 && ml->wg_netif) {
-                    ML_LWIP_LOCKED(wireguardif_remove_peer((struct netif *)ml->wg_netif,
-                                                           ml->peers[evict_idx].wg_peer_index));
-                }
-                disco_forget_probes(evict_idx);
-                idx = evict_idx;
-            }
-        }
+        /* A free slot, or for a kept peer the slot of one that is not kept
+         * (ml_peers_slot). The kept peers are another task's to change, so
+         * they are read under the peer table's lock. */
+        ml_peers_lock(ml);
+        const bool kept = ml_keep_has(ml->keep, ml->keep_count, ml->own_domain,
+                                      update->vpn_ip, update->hostname, !update->name_cut);
+        idx = ml_peers_slot(ml->peers, ML_MAX_PEERS, ml->keep, ml->keep_count,
+                            ml->own_domain, kept);
+        ml_peers_unlock(ml);
 
         if (idx < 0) {
             ESP_LOGW(TAG, "Peer table full (%d slots), cannot add %s",
                      ML_MAX_PEERS, update->hostname);
             return -1;
+        }
+
+        if (ml->peers[idx].active) {
+            char evict_ip[16];
+            microlink_ip_to_str(ml->peers[idx].vpn_ip, evict_ip);
+            ESP_LOGW(TAG, "Peer table full (%d slots): evicting %s (%s) for kept peer %s",
+                     ML_MAX_PEERS, ml->peers[idx].hostname, evict_ip, update->hostname);
+            /* Its WireGuard peer goes before the peer table's lock is
+             * taken: nothing is waited on under that lock */
+            if (ml->peers[idx].wg_peer_index >= 0 && ml->wg_netif) {
+                ML_LWIP_LOCKED(wireguardif_remove_peer((struct netif *)ml->wg_netif,
+                                                       ml->peers[idx].wg_peer_index));
+            }
+            disco_forget_probes(idx);
         }
     }
 
@@ -548,6 +532,8 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     p->best_ip = 0;
     p->best_port = 0;
     p->wg_peer_index = -1;
+    /* A slot's new peer has had no handshake tried, whatever its last had */
+    if (!known) p->tried_initial_handshake = false;
     ml_peers_unlock(ml);
 
     char ip_str[16];

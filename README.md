@@ -503,8 +503,8 @@ All settings via `idf.py menuconfig` → MicroLink V2 Configuration.
 | `enable_derp` | `true` | Enable DERP relay |
 | `enable_disco` | `true` | Enable DISCO path discovery |
 | `enable_stun` | `true` | Enable STUN NAT discovery |
-| `max_peers` | `16` | Maximum simultaneous active WireGuard tunnels (tailnet can have 300+ peers) |
-| `priority_peer_ip` | `0` | VPN IP of priority peer (guaranteed WG slot) |
+| `max_peers` | `16` | No limit of its own: logged at init. The peer table has `CONFIG_ML_MAX_PEERS` slots |
+| `priority_peer_ip` | `0` | VPN IP of the priority peer: kept a slot of the peer table, as `microlink_keep_peers()` keeps one, until that is called |
 | `disco_heartbeat_ms` | `3000` | DISCO keepalive interval |
 | `stun_interval_ms` | `23000` | STUN re-probe interval |
 | `ctrl_watchdog_ms` | `120000` | Control plane watchdog timeout |
@@ -552,9 +552,9 @@ MicroLink V2 Configuration
 | Option | Default | Description |
 |--------|---------|-------------|
 | `ML_ZERO_COPY_WG` | `n` | Zero-copy WireGuard via raw lwIP PCB (for 30fps+ streaming). See [High-Throughput Mode](#high-throughput-mode-zero-copy-wireguard). |
-| `ML_MAX_PEERS` | `16` | Maximum simultaneous active WireGuard tunnels (1-64). Each uses ~200 bytes. This is NOT the tailnet size limit — MicroLink tracks all peers (300+) but only maintains active tunnels to this many at once. Reduce to 8 for non-PSRAM. |
+| `ML_MAX_PEERS` | `16` | Slots in the peer table (1-64), each with its WireGuard tunnel; WireGuard's own peer count follows it. A slot takes about 1.2 KB on a 32-bit target (264 bytes of the instance, 904 of the WireGuard device). A tailnet with more peers leaves the rest out, with a warning each — see [Large tailnets](docs/LARGE_TAILNET.md). Reduce to 8 for non-PSRAM. |
 | `ML_NVS_MAX_PEERS` | `64` | Peers cached in NVS flash (16-1024). Persists across reboots so DISCO probing starts immediately. Each entry: 92 bytes. LRU eviction when full. |
-| `ML_PRIORITY_PEER_IP` | Empty | Priority peer VPN IP (e.g., `100.x.y.z`). Guaranteed a WG slot even when peer table is full — LRU non-priority peer is evicted. Also settable via web UI. |
+| `ML_PRIORITY_PEER_IP` | Empty | Priority peer VPN IP (e.g., `100.x.y.z`): kept a slot even when the peer table is full — a peer that is not kept gives way. Also settable via web UI; `microlink_keep_peers()` replaces it. |
 | `ML_H2_BUFFER_SIZE_KB` | `512` | H2 receive buffer (64-2048 KB, PSRAM-backed). Size determines max tailnet: 64KB ≈ 30 peers, 512KB ≈ 300 peers, 2048KB ≈ 1200 peers. |
 | `ML_JSON_BUFFER_SIZE_KB` | `512` | JSON parse buffer (64-2048 KB, PSRAM-backed). cJSON DOM uses 2-3x raw JSON size. Match to H2 buffer. |
 
