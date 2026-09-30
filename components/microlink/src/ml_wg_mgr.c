@@ -41,6 +41,7 @@ static const char *TAG = "ml_wg_mgr";
 /* Forward declarations */
 static void disco_send_call_me_maybe(microlink_t *ml, int peer_idx);
 static void disco_send_ping_to_peer(microlink_t *ml, int peer_idx, bool force);
+static void unlink_peer(void *ctx, int idx);
 
 /* DISCO message types */
 #define DISCO_MSG_PING          0x01
@@ -489,13 +490,9 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
             microlink_ip_to_str(ml->peers[idx].vpn_ip, evict_ip);
             ESP_LOGW(TAG, "Peer table full (%d slots): evicting %s (%s) for kept peer %s",
                      ML_MAX_PEERS, ml->peers[idx].hostname, evict_ip, update->hostname);
-            /* Its WireGuard peer goes before the peer table's lock is
-             * taken: nothing is waited on under that lock */
-            if (ml->peers[idx].wg_peer_index >= 0 && ml->wg_netif) {
-                ML_LWIP_LOCKED(wireguardif_remove_peer((struct netif *)ml->wg_netif,
-                                                       ml->peers[idx].wg_peer_index));
-            }
-            disco_forget_probes(idx);
+            /* What goes with it goes before the peer table's lock is taken:
+             * nothing is waited on under that lock */
+            unlink_peer(ml, idx);
         }
     }
 
