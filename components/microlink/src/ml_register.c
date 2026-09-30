@@ -1,6 +1,7 @@
 /**
  * @file ml_register.c
- * @brief What a registration was answered (see ml_register.h)
+ * @brief What a registration and a map were answered, and what a start does
+ *        about the identity it finds (see ml_register.h)
  */
 
 #include "ml_register.h"
@@ -39,6 +40,54 @@ const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const cha
         return stored;
     }
     return unstored;
+}
+
+ml_identity_plan_t ml_register_identity_plan(ml_kept_t machine, ml_kept_t wg, ml_kept_t disco,
+                                             ml_kept_t os, const char *stored_os,
+                                             const char *configured, const char *unstored) {
+    ml_identity_plan_t plan = {0};
+    if (machine == ML_KEPT_UNREADABLE || wg == ML_KEPT_UNREADABLE ||
+        disco == ML_KEPT_UNREADABLE || os == ML_KEPT_UNREADABLE) {
+        plan.fail = true;
+        return plan;
+    }
+    plan.make_machine = machine == ML_KEPT_ABSENT;
+    plan.make_wg = wg == ML_KEPT_ABSENT;
+    plan.make_disco = disco == ML_KEPT_ABSENT;
+    plan.os = ml_register_hostinfo_os(plan.make_machine, os == ML_KEPT_FOUND ? stored_os : NULL,
+                                      configured, unstored);
+    plan.store_os = plan.make_machine;
+    return plan;
+}
+
+bool ml_register_identity_save(const ml_identity_plan_t *plan,
+                               bool (*write)(void *ctx, ml_identity_write_t what), void *ctx) {
+    if (plan->fail) {
+        return false;
+    }
+    if (!plan->make_machine && !plan->make_wg && !plan->make_disco) {
+        return true;
+    }
+    const struct {
+        ml_identity_write_t what;
+        bool due;
+    } writes[] = {
+        {ML_SAVE_UNAUTHORIZE, true},
+        {ML_SAVE_OS, plan->store_os},
+        {ML_SAVE_MACHINE_PUB, plan->make_machine},
+        {ML_SAVE_MACHINE_PRI, plan->make_machine},
+        {ML_SAVE_WG_PUB, plan->make_wg},
+        {ML_SAVE_WG_PRI, plan->make_wg},
+        {ML_SAVE_DISCO_PUB, plan->make_disco},
+        {ML_SAVE_DISCO_PRI, plan->make_disco},
+        {ML_SAVE_COMMIT, true},
+    };
+    for (size_t i = 0; i < sizeof(writes) / sizeof(writes[0]); i++) {
+        if (writes[i].due && !write(ctx, writes[i].what)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* A decimal number of 1 to 3 digits at most `max`, from *p; -1 if none */

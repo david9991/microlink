@@ -470,6 +470,187 @@ static void hostinfo_os_is_fixed_with_the_keys(void) {
           "none stored, keys made by a build that reported freertos");
 }
 
+/* ---- the identity NVS keeps ------------------------------------------------ */
+
+/* NVS as a start finds it, and as a save leaves it */
+typedef struct {
+    bool authorized;
+    bool os;
+    char os_value[16];
+    bool pub[3];  /* machine, wg, disco */
+    bool pri[3];
+    bool committed;
+} nvs_t;
+
+/* A save's writes, and the one that fails */
+typedef struct {
+    nvs_t *nvs;
+    const char *os;                /* the OS the start reports */
+    int fail_at;                   /* the write that fails, from 0; -1 for none */
+    int made;                      /* writes attempted */
+    ml_identity_write_t order[16];
+} save_t;
+
+static bool save_write(void *ctx, ml_identity_write_t what) {
+    save_t *s = ctx;
+    s->order[s->made] = what;
+    if (s->made++ == s->fail_at) return false;
+    nvs_t *n = s->nvs;
+    switch (what) {
+    case ML_SAVE_UNAUTHORIZE: n->authorized = false; break;
+    case ML_SAVE_OS:
+        n->os = true;
+        snprintf(n->os_value, sizeof n->os_value, "%s", s->os);
+        break;
+    case ML_SAVE_MACHINE_PUB: n->pub[0] = true; break;
+    case ML_SAVE_MACHINE_PRI: n->pri[0] = true; break;
+    case ML_SAVE_WG_PUB: n->pub[1] = true; break;
+    case ML_SAVE_WG_PRI: n->pri[1] = true; break;
+    case ML_SAVE_DISCO_PUB: n->pub[2] = true; break;
+    case ML_SAVE_DISCO_PRI: n->pri[2] = true; break;
+    case ML_SAVE_COMMIT: n->committed = true; break;
+    }
+    return true;
+}
+
+static ml_kept_t kept(bool there) {
+    return there ? ML_KEPT_FOUND : ML_KEPT_ABSENT;
+}
+
+static ml_identity_plan_t plan_for(const nvs_t *n, const char *configured) {
+    return ml_register_identity_plan(kept(n->pri[0]), kept(n->pri[1]), kept(n->pri[2]), kept(n->os),
+                                     n->os_value, configured, "linux");
+}
+
+static void an_identity_that_cannot_be_read_is_left_alone(void) {
+    const ml_kept_t answers[] = {ML_KEPT_FOUND, ML_KEPT_ABSENT, ML_KEPT_UNREADABLE};
+    int failed = 0;
+    for (int m = 0; m < 3; m++) {
+        for (int w = 0; w < 3; w++) {
+            for (int d = 0; d < 3; d++) {
+                for (int o = 0; o < 3; o++) {
+                    const ml_identity_plan_t plan = ml_register_identity_plan(
+                        answers[m], answers[w], answers[d], answers[o], "freertos", "zephyr", "linux");
+                    const bool unreadable = m == 2 || w == 2 || d == 2 || o == 2;
+                    CHECK(plan.fail == unreadable, "%d%d%d%d: fail %d", m, w, d, o, plan.fail);
+                    nvs_t nvs = {0};
+                    save_t save = {.nvs = &nvs, .os = plan.os, .fail_at = -1};
+                    const bool saved = ml_register_identity_save(&plan, save_write, &save);
+                    if (unreadable) {
+                        /* Nothing is made, nothing is written, and the save says no */
+                        CHECK(!plan.make_machine && !plan.make_wg && !plan.make_disco && !plan.store_os,
+                              "%d%d%d%d: a key is made", m, w, d, o);
+                        CHECK(!saved && save.made == 0, "%d%d%d%d: %d writes", m, w, d, o, save.made);
+                        failed++;
+                        continue;
+                    }
+                    /* A key is made only where NVS holds none */
+                    CHECK(plan.make_machine == (m == 1) && plan.make_wg == (w == 1) &&
+                              plan.make_disco == (d == 1),
+                          "%d%d%d%d: makes %d%d%d", m, w, d, o, plan.make_machine, plan.make_wg,
+                          plan.make_disco);
+                    /* The OS: new machine keys report the build's and store
+                     * it; kept ones report what is stored, or the unstored OS */
+                    const char *os = m == 1 ? "zephyr" : o == 0 ? "freertos" : "linux";
+                    CHECK(strcmp(plan.os, os) == 0, "%d%d%d%d: reports %s", m, w, d, o, plan.os);
+                    CHECK(plan.store_os == (m == 1), "%d%d%d%d: stores %d", m, w, d, o, plan.store_os);
+                    /* Every key read: not one write */
+                    const bool all_read = m == 0 && w == 0 && d == 0;
+                    CHECK(saved && (save.made == 0) == all_read, "%d%d%d%d: %d writes", m, w, d, o,
+                          save.made);
+                }
+            }
+        }
+    }
+    CHECK(failed == 81 - 16, "plans that fail: %d", failed);
+    /* An OS found empty is none stored */
+    const ml_identity_plan_t empty = ml_register_identity_plan(
+        ML_KEPT_FOUND, ML_KEPT_FOUND, ML_KEPT_FOUND, ML_KEPT_FOUND, "", "zephyr", "linux");
+    CHECK(!empty.fail && strcmp(empty.os, "linux") == 0 && !empty.store_os, "empty OS: %s", empty.os);
+}
+
+/* Every identity NVS can hold, saved with a write failing at every position
+ * and at none, and the start after it: what a save cut short leaves is an
+ * identity the next start completes, never one it replaces or misreports */
+static void a_save_cut_short_leaves_an_identity_the_next_start_completes(void) {
+    int cut = 0;
+    for (int held = 0; held < 16; held++) {
+        nvs_t before = {.authorized = true};
+        for (int k = 0; k < 3; k++) {
+            before.pri[k] = before.pub[k] = held & (1 << k);
+        }
+        before.os = held & 8;
+        snprintf(before.os_value, sizeof before.os_value, "%s", before.os ? "freertos" : "");
+        for (int fail_at = -1; fail_at < 9; fail_at++) {
+            nvs_t nvs = before;
+            const ml_identity_plan_t plan = plan_for(&nvs, "zephyr");
+            save_t save = {.nvs = &nvs, .os = plan.os, .fail_at = fail_at};
+            const bool saved = ml_register_identity_save(&plan, save_write, &save);
+            const bool all_read = before.pri[0] && before.pri[1] && before.pri[2];
+            if (all_read) {
+                CHECK(saved && save.made == 0, "held %d: an identity read whole is written", held);
+                continue;
+            }
+            /* The writes, in their order: the authorisation's record first,
+             * the OS before the machine key, each public half before its
+             * private one, the commit last — and nothing after a failure */
+            CHECK(save.order[0] == ML_SAVE_UNAUTHORIZE, "held %d: first write %d", held, save.order[0]);
+            for (int i = 1; i < save.made; i++) {
+                CHECK(save.order[i] > save.order[i - 1], "held %d: write %d after %d", held,
+                      save.order[i], save.order[i - 1]);
+            }
+            const bool failed = fail_at >= 0 && fail_at < save.made;
+            CHECK(saved == !failed, "held %d, failing write %d: saved %d", held, fail_at, saved);
+            if (failed) {
+                CHECK(save.made == fail_at + 1, "held %d: %d writes after the failed one", held,
+                      save.made - fail_at - 1);
+                CHECK(!nvs.committed, "held %d: committed after a failed write", held);
+                cut++;
+            } else {
+                CHECK(save.order[save.made - 1] == ML_SAVE_COMMIT && nvs.committed,
+                      "held %d: not committed", held);
+            }
+            /* A key that was read is never written: what it held, it holds */
+            for (int k = 0; k < 3; k++) {
+                CHECK(!before.pri[k] || (nvs.pri[k] && nvs.pub[k]), "held %d: key %d lost", held, k);
+                CHECK(!nvs.pri[k] || nvs.pub[k], "held %d: key %d has no public half", held, k);
+            }
+            /* No authorisation outlives the keys it was given to */
+            CHECK(save.made < 2 || !nvs.authorized, "held %d: still authorised", held);
+            /* A machine key this save stored has its OS beside it */
+            if (!before.pri[0] && nvs.pri[0]) {
+                CHECK(nvs.os && strcmp(nvs.os_value, "zephyr") == 0, "held %d: machine key, OS %s",
+                      held, nvs.os ? nvs.os_value : "(none)");
+            }
+            /* The start after: it makes only the keys still missing, and the
+             * node reports the OS its machine key was stored with — by a
+             * build configured for another OS as well */
+            const nvs_t left = nvs;
+            const ml_identity_plan_t next = plan_for(&nvs, "windows");
+            CHECK(!next.fail, "held %d: the next start fails", held);
+            CHECK(next.make_machine == !left.pri[0] && next.make_wg == !left.pri[1] &&
+                      next.make_disco == !left.pri[2],
+                  "held %d, failing write %d: the next start makes %d%d%d", held, fail_at,
+                  next.make_machine, next.make_wg, next.make_disco);
+            const char *os = !left.pri[0] ? "windows" : left.os ? left.os_value : "linux";
+            CHECK(strcmp(next.os, os) == 0, "held %d, failing write %d: the next start reports %s",
+                  held, fail_at, next.os);
+            if (before.pri[0]) {
+                /* A machine key that was there reports what it always did */
+                CHECK(strcmp(next.os, plan.os) == 0, "held %d: OS %s, then %s", held, plan.os, next.os);
+            }
+            save_t again = {.nvs = &nvs, .os = next.os, .fail_at = -1};
+            CHECK(ml_register_identity_save(&next, save_write, &again), "held %d: second save", held);
+            CHECK(nvs.pri[0] && nvs.pri[1] && nvs.pri[2] && nvs.pub[0] && nvs.pub[1] && nvs.pub[2],
+                  "held %d: not whole after the second start", held);
+            const ml_identity_plan_t third = plan_for(&nvs, "plan9");
+            CHECK(strcmp(third.os, next.os) == 0 && !third.make_machine && !third.store_os,
+                  "held %d: the OS moves on the third start: %s, %s", held, next.os, third.os);
+        }
+    }
+    CHECK(cut > 40, "saves cut short: %d", cut);
+}
+
 static void read_every_address(void) {
     struct {
         const char *addr;
@@ -524,6 +705,8 @@ int main(void) {
     classify_every_reply();
     read_every_address();
     hostinfo_os_is_fixed_with_the_keys();
+    an_identity_that_cannot_be_read_is_left_alone();
+    a_save_cut_short_leaves_an_identity_the_next_start_completes();
     read_every_status();
     read_every_prefix();
     read_random_payloads();

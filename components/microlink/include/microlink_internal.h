@@ -326,7 +326,7 @@ struct microlink_s {
     char own_domain[64];
 
     /* The OS every request to the control server reports (Hostinfo.OS):
-     * fixed with the node's keys at init (ml_register_hostinfo_os) */
+     * fixed with the node's keys at init (ml_register_identity_plan) */
     char hostinfo_os[32];
 
     /* The last registration's answer, and whether it carried the auth key

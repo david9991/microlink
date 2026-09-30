@@ -1,6 +1,8 @@
 /**
  * @file ml_register.h
- * @brief What a registration was answered: pure functions, built and tested on the host too
+ * @brief What a registration and a map were answered, and what a start does
+ *        about the identity it finds: pure functions, built and tested on
+ *        the host too
  *
  * No ESP-IDF call here: host_test/ builds these with the host's compiler.
  */
@@ -70,6 +72,72 @@ int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags);
  */
 const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const char *configured,
                                     const char *unstored);
+
+/* What NVS answered a read of one thing an identity keeps there */
+typedef enum {
+    ML_KEPT_FOUND,       /* read */
+    ML_KEPT_ABSENT,      /* none is kept (ESP_ERR_NVS_NOT_FOUND) */
+    ML_KEPT_UNREADABLE,  /* anything else: an NVS error, or a key of another length */
+} ml_kept_t;
+
+/* What a start does about the identity NVS keeps */
+typedef struct {
+    bool fail;          /* something kept cannot be read: the start fails, nothing is written */
+    bool make_machine;  /* the keys this start makes, and saves */
+    bool make_wg;
+    bool make_disco;
+    const char *os;     /* the OS the node reports */
+    bool store_os;      /* ... stored, before the machine key is */
+} ml_identity_plan_t;
+
+/**
+ * @brief What a start does about the identity NVS keeps
+ * @param machine,wg,disco What NVS answered for each private key
+ * @param os What it answered for the OS stored with them
+ * @param stored_os That OS, when found
+ * @param configured,unstored As ml_register_hostinfo_os takes them
+ *
+ * A key is made only when NVS holds none. A key, or the OS, that NVS holds
+ * and cannot give fails the start: a key made in its place would overwrite
+ * an identity a later start may still read, and an OS guessed in its place
+ * may not be the one the node was registered with. A start that reads every
+ * key makes none, and saves nothing.
+ */
+ml_identity_plan_t ml_register_identity_plan(ml_kept_t machine, ml_kept_t wg, ml_kept_t disco,
+                                             ml_kept_t os, const char *stored_os,
+                                             const char *configured, const char *unstored);
+
+/* One write of an identity's save */
+typedef enum {
+    ML_SAVE_UNAUTHORIZE,  /* erase the record of an authorisation: it was the old keys' */
+    ML_SAVE_OS,
+    ML_SAVE_MACHINE_PUB,
+    ML_SAVE_MACHINE_PRI,
+    ML_SAVE_WG_PUB,
+    ML_SAVE_WG_PRI,
+    ML_SAVE_DISCO_PUB,
+    ML_SAVE_DISCO_PRI,
+    ML_SAVE_COMMIT,
+} ml_identity_write_t;
+
+/**
+ * @brief Save what a plan makes: each write in order, stopping at the first
+ *        that fails
+ * @param plan The plan
+ * @param write Makes one write; false when it failed
+ * @param ctx Passed to `write`
+ * @return true when every write was made — none at all for a plan that makes
+ *         no key: a key that was read is never written again
+ *
+ * The record of an authorisation goes first, then the OS, then each new key,
+ * its public half before its private one, then the commit. So whatever a
+ * save cut short leaves behind, a private key NVS holds has its public half
+ * beside it, a machine key has its OS, and no authorisation outlives the
+ * keys it was given to. A save that fails must fail the start: a node that
+ * registered on keys it did not keep would spend its auth key on them.
+ */
+bool ml_register_identity_save(const ml_identity_plan_t *plan,
+                               bool (*write)(void *ctx, ml_identity_write_t what), void *ctx);
 
 /**
  * @brief An IPv4 address of a node's Addresses: "a.b.c.d", or "a.b.c.d/n"

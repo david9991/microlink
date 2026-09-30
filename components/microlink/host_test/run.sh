@@ -18,6 +18,13 @@ build() {
     "$out/$name"
 }
 build test_register "$src/ml_register.c" "$here/test_register.c"
+# The OS a request reports is the one fixed with the node's keys
+# (microlink_t.hostinfo_os): only the start that reads the keys, in
+# microlink.c, may name the build's.
+if grep -l 'CONFIG_ML_HOSTINFO_OS' "$src"/*.c "$src"/*.h | grep -v '/microlink\.c$'; then
+    echo "the build's OS is named outside microlink.c: a request must report microlink_t.hostinfo_os" >&2
+    exit 1
+fi
 build test_peer_table "$src/ml_peer_table.c" "$here/test_peer_table.c"
 build test_frame_read "$src/ml_frame_read.c" "$here/test_frame_read.c"
 build test_derp_node "$src/ml_derp_node.c" "$here/test_derp_node.c"
