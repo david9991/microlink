@@ -14,6 +14,7 @@
 
 #include "microlink_internal.h"
 #include "ml_config_httpd.h"
+#include "ml_register.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_netif.h"
@@ -484,17 +485,21 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         if (evicted) ml_peers_forget(ml->peers, &ml->peer_count, idx);
         ml_peers_unlock(ml);
 
+        /* The names are the map's: another host's text, made printable */
+        char name[sizeof(update->hostname)];
+        ml_register_printable(name, sizeof(name), update->hostname);
         if (idx < 0) {
-            ESP_LOGW(TAG, "Peer table full (%d slots), cannot add %s",
-                     ML_MAX_PEERS, update->hostname);
+            ESP_LOGW(TAG, "Peer table full (%d slots), cannot add %s", ML_MAX_PEERS, name);
             return -1;
         }
 
         if (evicted) {
             char evict_ip[16];
+            char evict_name[sizeof(ml->peers[idx].hostname)];
             microlink_ip_to_str(ml->peers[idx].vpn_ip, evict_ip);
+            ml_register_printable(evict_name, sizeof(evict_name), ml->peers[idx].hostname);
             ESP_LOGW(TAG, "Peer table full (%d slots): evicting %s (%s) for kept peer %s",
-                     ML_MAX_PEERS, ml->peers[idx].hostname, evict_ip, update->hostname);
+                     ML_MAX_PEERS, evict_name, evict_ip, name);
             /* What goes with it goes before the peer table's lock is taken:
              * nothing is waited on under that lock */
             unlink_peer(ml, idx);
