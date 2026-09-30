@@ -1037,20 +1037,28 @@ esp_err_t microlink_keep_peers(microlink_t *ml, const microlink_keep_t *peers, i
     if (!ml || count < 0 || count > ML_KEEP_PEERS_MAX || (count > 0 && !peers)) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* The set as it is kept: an address, or a name and nothing after it */
-    microlink_keep_t keep[ML_KEEP_PEERS_MAX] = {0};
     for (int i = 0; i < count; i++) {
-        if (peers[i].vpn_ip != 0) {
-            keep[i].vpn_ip = peers[i].vpn_ip;
-            continue;
-        }
         const size_t len = strnlen(peers[i].name, sizeof(peers[i].name));
-        if (len == 0 || len == sizeof(peers[i].name)) return ESP_ERR_INVALID_ARG;
-        memcpy(keep[i].name, peers[i].name, len);
+        if (peers[i].vpn_ip == 0 && (len == 0 || len == sizeof(peers[i].name))) {
+            return ESP_ERR_INVALID_ARG;
+        }
     }
+    /* Each peer is kept as an address, or as a name and nothing after it,
+     * written straight into the instance: a caller's task has no room to
+     * spare for a copy of the set. */
     ml_peers_lock(ml);
-    const bool changed = count != ml->keep_count || memcmp(keep, ml->keep, sizeof(keep)) != 0;
-    memcpy(ml->keep, keep, sizeof(keep));
+    bool changed = count != ml->keep_count;
+    for (int i = 0; i < ML_KEEP_PEERS_MAX; i++) {
+        microlink_keep_t *k = &ml->keep[i];
+        const bool named = i < count && peers[i].vpn_ip == 0;
+        const uint32_t vpn_ip = i < count ? peers[i].vpn_ip : 0;
+        const char *name = named ? peers[i].name : "";
+        if (k->vpn_ip == vpn_ip && strcmp(k->name, name) == 0) continue;
+        changed = true;
+        memset(k, 0, sizeof(*k));
+        k->vpn_ip = vpn_ip;
+        strcpy(k->name, name);
+    }
     ml->keep_count = count;
     /* A kept peer the table does not hold comes with a full map only: the
      * first one, when none was applied yet */
