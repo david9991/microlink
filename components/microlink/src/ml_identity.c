@@ -133,12 +133,15 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
     ml_kept_t wg = ML_KEPT_ABSENT;
     ml_kept_t disco = ML_KEPT_ABSENT;
     ml_kept_t os = ML_KEPT_ABSENT;
-    char stored_os[32] = "";
+    bool os_stored = false;
     stored_public_t machine_public = {0};
     stored_public_t wg_public = {0};
     stored_public_t disco_public = {0};
 
-    /* Read through a handle that cannot write. No namespace yet: nothing kept. */
+    /* Read through a handle that cannot write. No namespace yet: nothing
+     * kept. The stored OS is read where the instance holds its OS: a node
+     * stores what fits there, so what fits there is what it may have stored. */
+    id->os[0] = '\0';
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(ML_NVS_NAMESPACE, NVS_READONLY, &nvs);
     if (err == ESP_OK) {
@@ -148,9 +151,10 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
         read_public_key(nvs, ML_NVS_KEY_MACHINE_PUB, &machine_public);
         read_public_key(nvs, ML_NVS_KEY_WG_PUB, &wg_public);
         read_public_key(nvs, ML_NVS_KEY_DISCO_PUB, &disco_public);
-        size_t os_len = sizeof(stored_os);
-        err = nvs_get_str(nvs, ML_NVS_KEY_OS, stored_os, &os_len);
+        size_t os_len = id->os_size;
+        err = nvs_get_str(nvs, ML_NVS_KEY_OS, id->os, &os_len);
         os = ml_register_kept(err, os_len, 0);
+        if (os != ML_KEPT_FOUND) id->os[0] = '\0';
         nvs_close(nvs);
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGE(TAG, "The keys cannot be read: NVS does not open (%s)", esp_err_to_name(err));
@@ -158,7 +162,7 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
     }
 
     const ml_identity_plan_t plan =
-        ml_register_identity_plan(machine, wg, disco, os, stored_os, configured_os, unstored_os);
+        ml_register_identity_plan(machine, wg, disco, os, id->os, configured_os, unstored_os);
     if (plan.fail) {
         ESP_LOGE(TAG,
                  "NVS holds an identity it cannot give (machine key: %s, node key: %s, "
@@ -173,11 +177,15 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
     compare_public_key(&machine_public, plan.make_machine, id->machine_public, "machine");
     compare_public_key(&wg_public, plan.make_wg, id->wg_public, "WireGuard");
     compare_public_key(&disco_public, plan.make_disco, id->disco_public, "DISCO");
-    snprintf(id->os, id->os_size, "%s", plan.os);
+    /* The OS reported: the stored one, where it already is, or the build's */
+    os_stored = plan.os == id->os;
+    if (!os_stored) {
+        snprintf(id->os, id->os_size, "%s", plan.os);
+    }
     ESP_LOGI(TAG, "Reports OS \"%s\": %s", id->os,
-             plan.store_os        ? "the build's, stored with its new machine key"
-             : os == ML_KEPT_FOUND && stored_os[0] ? "stored with its machine key"
-                                  : "none is stored with its machine key (ML_HOSTINFO_OS_UNSTORED)");
+             plan.store_os ? "the build's, stored with its new machine key"
+             : os_stored   ? "stored with its machine key"
+                           : "none is stored with its machine key (ML_HOSTINFO_OS_UNSTORED)");
 
     if (!ml_register_identity_saves(&plan)) {
         ESP_LOGI(TAG, "Keys loaded from NVS");

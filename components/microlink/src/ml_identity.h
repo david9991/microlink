@@ -34,7 +34,7 @@ typedef struct {
     uint8_t *wg_public;
     uint8_t *disco_private;
     uint8_t *disco_public;
-    char *os;
+    char *os;        /* the OS it reports: os_size bytes, and the most a stored OS may take */
     size_t os_size;
 } ml_identity_t;
 

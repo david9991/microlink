@@ -183,10 +183,11 @@ static struct {
     uint8_t machine_private[32], machine_public[32];
     uint8_t wg_private[32], wg_public[32];
     uint8_t disco_private[32], disco_public[32];
-    char os[32];
+    char os[64];
 } node;
 
-static esp_err_t load(void) {
+/* A load into an instance whose OS takes `os_size` bytes */
+static esp_err_t load_sized(size_t os_size) {
     memset(&node, 0xee, sizeof node);
     nvs.ro_opens = nvs.rw_opens = nvs.writes = 0;
     nvs.committed = false;
@@ -200,7 +201,7 @@ static esp_err_t load(void) {
         .disco_private = node.disco_private,
         .disco_public = node.disco_public,
         .os = node.os,
-        .os_size = sizeof node.os,
+        .os_size = os_size,
     };
     const esp_err_t err = ml_identity_load(&id, "freertos", "linux");
     CHECK(nvs.open_handles == 0, "%d handles left open", nvs.open_handles);
@@ -208,6 +209,10 @@ static esp_err_t load(void) {
      * still find a string */
     node.os[sizeof node.os - 1] = '\0';
     return err;
+}
+
+static esp_err_t load(void) {
+    return load_sized(32);
 }
 
 static const char *const PRIVATE[3] = {ML_NVS_KEY_MACHINE_PRI, ML_NVS_KEY_WG_PRI, ML_NVS_KEY_DISCO_PRI};
@@ -434,8 +439,42 @@ static void a_stored_public_half_that_is_not_its_private_halfs_is_said(void) {
     CHECK(load() == ESP_OK && errors_logged == 0, "a stale public half beside a key made now");
 }
 
+static void a_stored_os_is_as_long_as_the_instance_holds_one(void) {
+    static const char long_os[] = "an-operating-system-with-a-long-name";  /* 36 and its NUL */
+    /* An instance with room for it reports it; one without cannot read it,
+     * and fails its start rather than report another */
+    enrolled();
+    put(ML_NVS_KEY_OS, long_os, sizeof long_os);
+    remember();
+    CHECK(load_sized(48) == ESP_OK && strcmp(node.os, long_os) == 0, "48 bytes: reports %s", node.os);
+    CHECK(untouched(), "48 bytes: written");
+    CHECK(load_sized(sizeof long_os) == ESP_OK && strcmp(node.os, long_os) == 0, "exactly its size");
+    CHECK(load_sized(sizeof long_os - 1) != ESP_OK && untouched(), "one byte short");
+    CHECK(load_sized(16) != ESP_OK && untouched(), "16 bytes");
+    /* A new node stores the OS as its instance holds it — cut, if the
+     * build's is longer — and reports that same OS at every later start */
+    for (size_t size = 4; size <= 48; size += 11) {
+        empty();
+        CHECK(load_sized(size) == ESP_OK, "%zu bytes: a new node", size);
+        char stored[64];
+        snprintf(stored, sizeof stored, "%s", node.os);
+        CHECK(strlen(stored) == (size > 8 ? 8 : size - 1) && strncmp(stored, "freertos", strlen(stored)) == 0,
+              "%zu bytes: reports %s", size, stored);
+        CHECK(holds(ML_NVS_KEY_OS, stored, strlen(stored) + 1), "%zu bytes: stores another", size);
+        remember();
+        CHECK(load_sized(size) == ESP_OK && strcmp(node.os, stored) == 0 && untouched(),
+              "%zu bytes: the next start reports %s", size, node.os);
+    }
+    /* Nothing of a stored OS that could not be read is left in the instance */
+    enrolled();
+    put(ML_NVS_KEY_OS, "zephyr", 7);
+    find(ML_NVS_KEY_OS)->present = false;
+    CHECK(load_sized(8) == ESP_OK && strcmp(node.os, "linux") == 0, "no OS stored: %s", node.os);
+}
+
 int main(void) {
     an_enrolled_node_is_read_and_never_written();
+    a_stored_os_is_as_long_as_the_instance_holds_one();
     a_stored_public_half_that_is_not_its_private_halfs_is_said();
     what_nvs_cannot_give_fails_the_start_and_nothing_is_written();
     a_new_node_is_made_and_saved_whole();
