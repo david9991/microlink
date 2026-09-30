@@ -422,6 +422,10 @@ static void wg_update_vpn_ip(microlink_t *ml) {
  * Peer Management (owned exclusively by this task)
  * ========================================================================== */
 
+/* Every slot of the peer table has a WireGuard peer to go with it */
+_Static_assert(WIREGUARD_MAX_PEERS == ML_MAX_PEERS,
+               "WireGuard's peers are the peer table's slots");
+
 static int find_peer_by_key(microlink_t *ml, const uint8_t *pubkey) {
     for (int i = 0; i < ml->peer_count; i++) {
         if (ml->peers[i].active && memcmp(ml->peers[i].public_key, pubkey, 32) == 0) {

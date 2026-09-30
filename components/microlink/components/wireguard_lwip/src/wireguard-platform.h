@@ -37,9 +37,16 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-// Peers are allocated statically inside the device structure to avoid malloc
-// Increased from 1 to support multiple Tailscale peers (10 peers for larger networks)
+#include "sdkconfig.h"
+
+// Peers are allocated statically inside the device structure to avoid malloc.
+// With MicroLink, as many as its peer table has slots (ML_MAX_PEERS): a peer
+// of the table past that many would have no tunnel.
+#ifdef CONFIG_ML_MAX_PEERS
+#define WIREGUARD_MAX_PEERS CONFIG_ML_MAX_PEERS
+#else
 #define WIREGUARD_MAX_PEERS 16
+#endif
 #define WIREGUARD_MAX_SRC_IPS 2
 
 // Per device limit on accepting (valid) initiation requests - per peer
