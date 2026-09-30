@@ -471,12 +471,17 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
     } else {
         /* A free slot, or for a kept peer the slot of one that is not kept
          * (ml_peers_slot). The kept peers are another task's to change, so
-         * they are read under the peer table's lock. */
+         * they are read under the peer table's lock — and a slot in use is
+         * given up under the same hold: a change of the kept peers after it
+         * finds that peer gone, and asks for the map again if it is now
+         * kept, rather than keeping a peer about to be taken down. */
         ml_peers_lock(ml);
         const bool kept = ml_keep_has(ml->keep, ml->keep_count, ml->own_domain,
                                       update->vpn_ip, update->hostname, !update->name_cut);
         idx = ml_peers_slot(ml->peers, ML_MAX_PEERS, ml->keep, ml->keep_count,
                             ml->own_domain, kept);
+        const bool evicted = idx >= 0 && ml->peers[idx].active;
+        if (evicted) ml_peers_forget(ml->peers, &ml->peer_count, idx);
         ml_peers_unlock(ml);
 
         if (idx < 0) {
@@ -485,7 +490,7 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
             return -1;
         }
 
-        if (ml->peers[idx].active) {
+        if (evicted) {
             char evict_ip[16];
             microlink_ip_to_str(ml->peers[idx].vpn_ip, evict_ip);
             ESP_LOGW(TAG, "Peer table full (%d slots): evicting %s (%s) for kept peer %s",
