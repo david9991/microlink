@@ -322,10 +322,11 @@ typedef struct {
  * frame before the final header block, padding that does not fit, and a 1xx
  * that ends the stream.
  *
- * The map's readers in ml_coord.c do not use it; each walks its frames its
- * own way: do_fetch_peers's scan for the first map's end and its copy of
- * that map's DATA, and poll_map_update's read of the long-poll stream, a
- * stream that does not end, among the server's PINGs and SETTINGS.
+ * The first map's response is read by it too (do_fetch_peers, stream 3):
+ * its end by ml_h2_response_complete, its status and its body by this. The
+ * streaming updates are not: poll_map_update reads the long-poll stream — a
+ * stream that does not end, among the server's PINGs and SETTINGS — its
+ * own way.
  */
 void ml_h2_read_response(const uint8_t *frames, size_t len, uint32_t stream,
                          uint8_t *data, size_t cap, ml_h2_response_t *r);

@@ -451,6 +451,61 @@ static void read_every_frames_prefix(void) {
     }
 }
 
+/* The first map's response, on stream 3: what ends the wait for it, and
+ * what its status and its body are read as */
+static void read_a_map_response(void) {
+    uint8_t buf[512];
+    uint8_t body[64];
+    ml_h2_response_t r;
+    const uint8_t ok[] = {0x88};   /* :status 200 */
+    const uint8_t err[] = {0x8e};  /* :status 500 */
+    /* An error answered as a header block that ends the stream: complete,
+     * with its status and no body — not something to wait a timeout for */
+    size_t n = frame(buf, SETTINGS, 0, 0, NULL, 0);
+    n += frame(buf + n, HEADERS, END_HEADERS | END_STREAM, 3, err, sizeof err);
+    CHECK(ml_h2_response_complete(buf, n, 3), "HEADERS with END_STREAM ends the response");
+    ml_h2_read_response(buf, n, 3, body, sizeof body, &r);
+    CHECK(r.ended && !r.reset && !r.malformed && r.status == 500 && r.data_len == 0,
+          "an error with no body: status %d, %zu bytes", r.status, r.data_len);
+    CHECK(!ml_register_map_status_ok(r.status), "and it is no map");
+    /* A reset ends it too */
+    const uint8_t cancel[] = {0, 0, 0, 8};
+    n = frame(buf, HEADERS, END_HEADERS, 3, ok, sizeof ok);
+    n += frame(buf + n, DATA, 0, 3, (const uint8_t *)"{\"No", 4);
+    CHECK(!ml_h2_response_complete(buf, n, 3), "a body under way is not the end");
+    n += frame(buf + n, RST_STREAM, 0, 3, cancel, sizeof cancel);
+    CHECK(ml_h2_response_complete(buf, n, 3), "RST_STREAM ends the response");
+    ml_h2_read_response(buf, n, 3, body, sizeof body, &r);
+    CHECK(r.ended && r.reset && r.status == 200, "a reset response: reset %d", r.reset);
+    /* A reset of another stream does not */
+    n = frame(buf, HEADERS, END_HEADERS, 3, ok, sizeof ok);
+    n += frame(buf + n, RST_STREAM, 0, 5, cancel, sizeof cancel);
+    CHECK(!ml_h2_response_complete(buf, n, 3), "another stream's reset");
+    /* The body: stream 3's DATA, padding off, other streams' left out */
+    const uint8_t padded[] = {3, '{', '"', 'a', '"', 'P', 'A', 'D'};  /* Pad Length 3 */
+    n = frame(buf, HEADERS, END_HEADERS, 3, ok, sizeof ok);
+    n += frame(buf + n, DATA, PADDED, 3, padded, sizeof padded);
+    n += frame(buf + n, DATA, 0, 5, (const uint8_t *)"OTHER", 5);
+    n += frame(buf + n, DATA, END_STREAM, 5, (const uint8_t *)"X", 1);
+    CHECK(!ml_h2_response_complete(buf, n, 3), "another stream's END_STREAM");
+    n += frame(buf + n, DATA, 0, 3, (const uint8_t *)":1}", 3);
+    n += frame(buf + n, DATA, END_STREAM, 3, NULL, 0);
+    CHECK(ml_h2_response_complete(buf, n, 3), "an empty DATA frame with END_STREAM");
+    memset(body, 0, sizeof body);
+    ml_h2_read_response(buf, n, 3, body, sizeof body, &r);
+    CHECK(r.ended && r.status == 200 && r.data_len == 7 && memcmp(body, "{\"a\":1}", 7) == 0,
+          "the body: %zu bytes, %.7s", r.data_len, (const char *)body);
+    /* A body longer than the buffer: counted whole, copied as far as fits,
+     * and not a byte past it — which is how a map too large is known */
+    memset(body, '#', sizeof body);
+    ml_h2_read_response(buf, n, 3, body, 4, &r);
+    CHECK(r.data_len == 7 && memcmp(body, "{\"a\"#", 5) == 0, "a body cut at 4: %zu counted", r.data_len);
+    /* Every prefix of the response: complete only when it is whole */
+    for (size_t len = 0; len < n; len++) {
+        CHECK(!ml_h2_response_complete(buf, len, 3), "the first %zu of %zu bytes", len, n);
+    }
+}
+
 static void hostinfo_os_is_fixed_with_the_keys(void) {
     const char *configured = "freertos";
     const char *unstored = "linux";
@@ -927,6 +982,7 @@ static void read_every_address(void) {
 int main(void) {
     classify_every_reply();
     read_every_address();
+    read_a_map_response();
     read_every_list_of_addresses();
     what_a_map_says_of_the_address();
     waits_before_a_reconnect();

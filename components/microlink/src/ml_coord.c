@@ -1720,7 +1720,6 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
      * Scan for H2 END_STREAM flag (0x01) on DATA frames to know when the
      * response is complete — without this, we wait for the full recv timeout
      * (60s) before proceeding, which dominates connection time on cellular. */
-    bool got_end_stream = false;
     for (int read_count = 0; read_count < 200; read_count++) {
         uint8_t *frame_buf = ml_psram_malloc(65536);
         if (!frame_buf) break;
@@ -1743,28 +1742,12 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         }
         free(frame_buf);
 
-        /* Scan newly accumulated data for H2 END_STREAM flag: a walk of its
-         * own, not ml_h2_read_response's (see ml_register.h).
-         * H2 frame header: 3 bytes length + 1 byte type + 1 byte flags + 4 bytes stream ID.
-         * The response is complete at a DATA frame that carries END_STREAM.
-         * We scan from the start each time since frames may span Noise boundaries. */
-        size_t scan_pos = 0;
-        while (scan_pos + 9 <= h2_total) {
-            uint32_t f_len = (h2_recv[scan_pos] << 16) | (h2_recv[scan_pos + 1] << 8) | h2_recv[scan_pos + 2];
-            uint8_t f_type = h2_recv[scan_pos + 3];
-            uint8_t f_flags = h2_recv[scan_pos + 4];
-
-            if (scan_pos + 9 + f_len > h2_total) break;  /* Incomplete frame */
-
-            if (f_type == H2_FRAME_DATA && (f_flags & H2_FLAG_END_STREAM)) {
-                /* DATA frame with END_STREAM — response is complete */
-                got_end_stream = true;
-            }
-            scan_pos += 9 + f_len;
-        }
-
-        if (got_end_stream) {
-            ESP_LOGI(TAG, "H2 END_STREAM detected after %d Noise frames (%dKB, %lums)",
+        /* The response on stream 3 has ended — END_STREAM on its DATA or
+         * on its header block, or a reset — or its frames are no response:
+         * nothing more to wait for (ml_h2_response_complete). Read from the
+         * start each time: a frame may span Noise frames. */
+        if (ml_h2_response_complete(h2_recv, h2_total, 3)) {
+            ESP_LOGI(TAG, "MapResponse complete after %d Noise frames (%dKB, %lums)",
                      read_count + 1, (int)(h2_total / 1024),
                      (unsigned long)(ml_get_time_ms() - recv_start_ms));
             break;
@@ -1800,46 +1783,20 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
              (int)(h2_total / 1024),
              (unsigned long)(ml_get_time_ms() - recv_start_ms));
 
-    /* Now parse complete H2 frames from accumulated buffer: a walk of its
-     * own, not ml_h2_read_response's (see ml_register.h) */
-    int fpos = 0;
-    while (fpos + 9 <= (int)h2_total) {
-        uint32_t f_len = (h2_recv[fpos] << 16) | (h2_recv[fpos + 1] << 8) | h2_recv[fpos + 2];
-        uint8_t f_type = h2_recv[fpos + 3];
-        uint8_t f_flags = h2_recv[fpos + 4];
-        uint32_t f_stream = ((h2_recv[fpos + 5] & 0x7F) << 24) |
-                            (h2_recv[fpos + 6] << 16) |
-                            (h2_recv[fpos + 7] << 8) | h2_recv[fpos + 8];
-        fpos += 9;
-
-        ESP_LOGI(TAG, "  H2 frame: type=%d flags=0x%02x len=%lu stream=%lu",
-                 f_type, f_flags, (unsigned long)f_len, (unsigned long)f_stream);
-
-        if (fpos + (int)f_len > (int)h2_total) {
-            ESP_LOGW(TAG, "  Incomplete H2 frame at end (need %lu, have %d)",
-                     (unsigned long)f_len, (int)h2_total - fpos);
-            break;
-        }
-
-        /* The map's body: the DATA frames of its own stream, 3 */
-        if (f_type == H2_FRAME_DATA && f_stream == 3 && f_len > 0) {
-            if (json_total + f_len < ML_JSON_BUFFER_SIZE) {
-                memcpy(resp_buf + json_total, h2_recv + fpos, f_len);
-                json_total += f_len;
-            } else {
-                oversized = true;
-            }
-        }
-
-        fpos += f_len;
-    }
-    /* Its status: an error's body is no map, whatever JSON it carries */
-    const int map_status = ml_h2_final_status(h2_recv, h2_total, 3);
+    /* The response on stream 3, read once, as a registration's is: its
+     * status, its body — DATA frames' padding off — and how it ended. The
+     * body's length is counted past what the buffer takes. */
+    ml_h2_response_t response;
+    ml_h2_read_response(h2_recv, h2_total, 3, resp_buf, ML_JSON_BUFFER_SIZE - 1, &response);
     free(h2_recv);
+    const int map_status = response.status;
+    ESP_LOGI(TAG, "MapResponse: status %d, body %d bytes%s%s%s", map_status,
+             (int)response.data_len, response.ended ? "" : ", not ended",
+             response.reset ? ", reset" : "", response.malformed ? ", malformed" : "");
 
     /* A map cut at a buffer's end cannot be read, and the next one will be
      * as large: a lasting answer, like a map with no address */
-    if (oversized) {
+    if (oversized || response.data_len > ML_JSON_BUFFER_SIZE - 1) {
         ml->map = ML_MAP_OVERSIZED;
         ESP_LOGW(TAG, "MapResponse larger than its buffers (ML_H2_BUFFER_SIZE_KB %d, "
                       "ML_JSON_BUFFER_SIZE_KB %d): it cannot be read",
@@ -1847,6 +1804,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         free(resp_buf);
         return -1;
     }
+    json_total = response.data_len;
 
     /* Send connection-level WINDOW_UPDATE to replenish HTTP/2 flow control.
      * Stream 3 is already closed (END_STREAM received), so only update stream 0.
@@ -1860,6 +1818,17 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
 
     if (!ml_register_map_status_ok(map_status)) {
         ESP_LOGW(TAG, "MapRequest answered with status %d: no map", map_status);
+        free(resp_buf);
+        return -1;
+    }
+
+    /* A response that did not end whole — cut off, reset, or frames that
+     * are no response — is no map either */
+    if (!response.ended || response.reset || response.malformed) {
+        ESP_LOGW(TAG, "MapResponse %s: no map",
+                 response.malformed ? "is no HTTP/2 response"
+                 : response.reset   ? "was reset"
+                                    : "did not end");
         free(resp_buf);
         return -1;
     }
