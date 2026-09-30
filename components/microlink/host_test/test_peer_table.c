@@ -467,6 +467,11 @@ static void kept_peers(void) {
     CHECK(slot(true) == 1, "nor does a cut name: %d", slot(true));
     peers[1].name_cut = false;
 
+    /* A peer with no address is no peer kept by name: its 0 is not the 0
+     * of an entry that names no address */
+    CHECK(!kept(0, "anything.tail1.ts.net", true), "address 0 is not kept by a name's 0");
+    CHECK(kept(0, "laptop.tail1.ts.net", true), "but by its own name");
+
     /* Every slot a kept peer's: a further kept peer is left out too */
     keeps = 0;
     for (int i = 0; i < PEERS; i++) keep_address(peers[i].vpn_ip);

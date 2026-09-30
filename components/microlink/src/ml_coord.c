@@ -1377,8 +1377,13 @@ static void parse_peers_from_map_response(microlink_t *ml, cJSON *root) {
             hex_to_bytes(hex, update->disco_key, 32);
         }
 
-        /* VPN IP from Addresses: read as the node's own is */
+        /* VPN IP from Addresses: read as the node's own is. A peer with no
+         * IPv4 address cannot be reached through the tunnel: it takes no
+         * slot of the peer table, and gives up one it had. */
         update->vpn_ip = node_ipv4(peer);
+        if (update->vpn_ip == 0) {
+            update->action = ML_PEER_REMOVE;
+        }
 
         /* DERP region — try modern HomeDERP (int) first, then legacy DERP string */
         cJSON *peer_home_derp = cJSON_GetObjectItem(peer, "HomeDERP");
