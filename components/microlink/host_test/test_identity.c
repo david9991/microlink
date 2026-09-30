@@ -405,8 +405,35 @@ static void a_save_that_fails_fails_the_start(void) {
     CHECK(load() == ESP_ERR_NVS_NOT_ENOUGH_SPACE && nvs.writes == 0, "no read-write handle");
 }
 
+static void a_stored_public_half_that_is_not_its_private_halfs_is_said(void) {
+    static const uint8_t other[32] = {9, 9, 9};
+    for (int k = 0; k < 3; k++) {
+        enrolled();
+        uint8_t derived[32];
+        memcpy(derived, find(PUBLIC[k])->data, 32);
+        put(PUBLIC[k], other, 32);
+        remember();
+        CHECK(load() == ESP_OK, "key %d: the start fails", k);
+        CHECK(untouched(), "key %d: written", k);
+        CHECK(errors_logged == 1, "key %d: %d errors logged", k, errors_logged);
+        /* The node's key is its private half's */
+        const uint8_t *used = k == 0 ? node.machine_public : k == 1 ? node.wg_public : node.disco_public;
+        CHECK(memcmp(used, derived, 32) == 0, "key %d: the stored half is used", k);
+        /* A stored half that is absent, or not a key, is not compared */
+        find(PUBLIC[k])->present = false;
+        CHECK(load() == ESP_OK && errors_logged == 0, "key %d: no stored half", k);
+        put(PUBLIC[k], other, 31);
+        CHECK(load() == ESP_OK && errors_logged == 0, "key %d: a stored half cut short", k);
+    }
+    /* A key made now has no stored half to differ from */
+    empty();
+    put(PUBLIC[1], other, 32);
+    CHECK(load() == ESP_OK && errors_logged == 0, "a stale public half beside a key made now");
+}
+
 int main(void) {
     an_enrolled_node_is_read_and_never_written();
+    a_stored_public_half_that_is_not_its_private_halfs_is_said();
     what_nvs_cannot_give_fails_the_start_and_nothing_is_written();
     a_new_node_is_made_and_saved_whole();
     a_missing_key_is_made_and_the_others_left();

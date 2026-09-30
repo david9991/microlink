@@ -34,6 +34,34 @@ static ml_kept_t read_private_key(nvs_handle_t nvs, const char *name, uint8_t ke
     return ml_register_kept(err, len, 32);
 }
 
+/* A key's public half as NVS holds it: read only to be compared */
+typedef struct {
+    bool read;
+    uint8_t key[32];
+} stored_public_t;
+
+static void read_public_key(nvs_handle_t nvs, const char *name, stored_public_t *stored) {
+    size_t len = sizeof(stored->key);
+    const esp_err_t err = nvs_get_blob(nvs, name, stored->key, &len);
+    stored->read = ml_register_kept(err, len, sizeof(stored->key)) == ML_KEPT_FOUND;
+}
+
+/* Say so when the public half NVS holds for a key that was read is not the
+ * one its private half gives: the node goes on with the derived one, which
+ * a build that read the stored half did not use — for the node key, the
+ * control server then sees another node. Nothing is written. */
+static void compare_public_key(const stored_public_t *stored, bool made, const uint8_t *derived,
+                               const char *what) {
+    if (!made && stored->read && memcmp(stored->key, derived, sizeof(stored->key)) != 0) {
+        ESP_LOGE(TAG,
+                 "The %s key's public half in NVS is not the one its private half gives: "
+                 "the node uses the derived one (%02x%02x%02x%02x...), not the stored "
+                 "(%02x%02x%02x%02x...); nothing is written",
+                 what, derived[0], derived[1], derived[2], derived[3], stored->key[0],
+                 stored->key[1], stored->key[2], stored->key[3]);
+    }
+}
+
 static const char *kept_str(ml_kept_t kept) {
     return kept == ML_KEPT_FOUND ? "read" : kept == ML_KEPT_ABSENT ? "none" : "unreadable";
 }
@@ -106,6 +134,9 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
     ml_kept_t disco = ML_KEPT_ABSENT;
     ml_kept_t os = ML_KEPT_ABSENT;
     char stored_os[32] = "";
+    stored_public_t machine_public = {0};
+    stored_public_t wg_public = {0};
+    stored_public_t disco_public = {0};
 
     /* Read through a handle that cannot write. No namespace yet: nothing kept. */
     nvs_handle_t nvs;
@@ -114,6 +145,9 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
         machine = read_private_key(nvs, ML_NVS_KEY_MACHINE_PRI, id->machine_private);
         wg = read_private_key(nvs, ML_NVS_KEY_WG_PRI, id->wg_private);
         disco = read_private_key(nvs, ML_NVS_KEY_DISCO_PRI, id->disco_private);
+        read_public_key(nvs, ML_NVS_KEY_MACHINE_PUB, &machine_public);
+        read_public_key(nvs, ML_NVS_KEY_WG_PUB, &wg_public);
+        read_public_key(nvs, ML_NVS_KEY_DISCO_PUB, &disco_public);
         size_t os_len = sizeof(stored_os);
         err = nvs_get_str(nvs, ML_NVS_KEY_OS, stored_os, &os_len);
         os = ml_register_kept(err, os_len, 0);
@@ -136,6 +170,9 @@ esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
     key_pair(plan.make_machine, id->machine_private, id->machine_public, "machine");
     key_pair(plan.make_wg, id->wg_private, id->wg_public, "WireGuard");
     key_pair(plan.make_disco, id->disco_private, id->disco_public, "DISCO");
+    compare_public_key(&machine_public, plan.make_machine, id->machine_public, "machine");
+    compare_public_key(&wg_public, plan.make_wg, id->wg_public, "WireGuard");
+    compare_public_key(&disco_public, plan.make_disco, id->disco_public, "DISCO");
     snprintf(id->os, id->os_size, "%s", plan.os);
     ESP_LOGI(TAG, "Reports OS \"%s\": %s", id->os,
              plan.store_os        ? "the build's, stored with its new machine key"

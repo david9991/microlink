@@ -53,8 +53,9 @@ typedef struct {
  * The keys are read through a handle that cannot write; one that can is
  * opened only when there is something to save
  * (ml_register_identity_saves). A public key is derived from its private
- * half, never read: the stored half is only compared, and a difference
- * said, since the node's key is then not the one a build that read it used.
+ * half. The stored half is read only to be compared: a difference is
+ * logged as an error and nothing is written, since the node's key is then
+ * not the one a build that read the stored half used.
  */
 esp_err_t ml_identity_load(const ml_identity_t *id, const char *configured_os,
                            const char *unstored_os);
