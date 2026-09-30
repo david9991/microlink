@@ -1941,6 +1941,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
     if (address == ML_MAP_ADDRESS_NONE) {
         ml->map = ML_MAP_UNSERVED;
+        ml->vpn_ip = 0;  /* whatever an earlier session gave, the node has none now */
         ESP_LOGW(TAG, "MapResponse gives this node no IPv4 address: the control server does "
                       "not serve it");
         cJSON_Delete(map_json);
@@ -2439,6 +2440,7 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
         const ml_map_address_t address = map_address(update_json, false, &new_ip);
         if (address == ML_MAP_ADDRESS_NONE) {
             ml->map = ML_MAP_UNSERVED;
+            ml->vpn_ip = 0;
             ESP_LOGW(TAG, "A map update leaves this node no IPv4 address: the control server "
                           "no longer serves it");
             cJSON_Delete(update_json);

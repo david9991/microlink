@@ -251,7 +251,8 @@ microlink_map_t microlink_get_map(const microlink_t *ml);
 
 /**
  * @brief Get our assigned VPN IP
- * @return VPN IP in host byte order, 0 if not yet assigned
+ * @return VPN IP in host byte order; 0 if not yet assigned, and again once
+ *         a map gives the node none (ML_MAP_UNSERVED)
  */
 uint32_t microlink_get_vpn_ip(const microlink_t *ml);
 
