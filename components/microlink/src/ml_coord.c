@@ -848,10 +848,29 @@ static cJSON *hostinfo_new(microlink_t *ml) {
     char os_version[64];
     snprintf(os_version, sizeof(os_version), "ESP-IDF %s (%s)", esp_get_idf_version(),
              CONFIG_IDF_TARGET);
-    cJSON_AddStringToObject(hostinfo, "Hostname", dev_name);
-    cJSON_AddStringToObject(hostinfo, "OS", ml->hostinfo_os);
-    cJSON_AddStringToObject(hostinfo, "OSVersion", os_version);
-    cJSON_AddStringToObject(hostinfo, "GoArch", HOSTINFO_GOARCH);
+    if (!cJSON_AddStringToObject(hostinfo, "Hostname", dev_name) ||
+        !cJSON_AddStringToObject(hostinfo, "OS", ml->hostinfo_os) ||
+        !cJSON_AddStringToObject(hostinfo, "OSVersion", os_version) ||
+        !cJSON_AddStringToObject(hostinfo, "GoArch", HOSTINFO_GOARCH)) {
+        cJSON_Delete(hostinfo);
+        return NULL;
+    }
+    return hostinfo;
+}
+
+/* Give a request its Hostinfo: the Hostinfo, now the request's, or NULL with
+ * nothing added when memory ran out. A request without it is not sent: the
+ * OS it carries is what the control server holds the node to, and one that
+ * leaves it out is answered as a node whose OS changed. */
+static cJSON *add_hostinfo(microlink_t *ml, cJSON *request) {
+    cJSON *hostinfo = hostinfo_new(ml);
+    if (hostinfo && !cJSON_AddItemToObject(request, "Hostinfo", hostinfo)) {
+        cJSON_Delete(hostinfo);
+        hostinfo = NULL;
+    }
+    if (!hostinfo) {
+        ESP_LOGE(TAG, "No memory for a request's Hostinfo: the request is not sent");
+    }
     return hostinfo;
 }
 
@@ -941,7 +960,12 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     }
 
     /* Hostinfo */
-    cJSON *hostinfo = hostinfo_new(ml);
+    cJSON *hostinfo = add_hostinfo(ml, root);
+    if (!hostinfo) {
+        cJSON_Delete(root);
+        xSemaphoreGive(ml->auth_lock);
+        return -1;
+    }
 
     /* NetInfo inside Hostinfo — control plane reads PreferredDERP from here
      * to populate Node.HomeDERP for other peers */
@@ -952,8 +976,6 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
             cJSON_AddItemToObject(hostinfo, "NetInfo", netinfo);
         }
     }
-
-    cJSON_AddItemToObject(root, "Hostinfo", hostinfo);
 
     /* NodeKeyChallengeResponse - prove we own the WireGuard private key
      * Server sends challenge public key in EarlyNoise; we respond with
@@ -1584,8 +1606,11 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     cJSON_AddStringToObject(root, "Compress", "");  /* Disable compression */
 
     /* Hostinfo */
-    cJSON *hostinfo = hostinfo_new(ml);
-    cJSON_AddItemToObject(root, "Hostinfo", hostinfo);
+    cJSON *hostinfo = add_hostinfo(ml, root);
+    if (!hostinfo) {
+        cJSON_Delete(root);
+        return -1;
+    }
 
     /* NetInfo: tell control plane our preferred DERP region and NAT type.
      * MUST be inside Hostinfo — the control plane reads Hostinfo.NetInfo.PreferredDERP
@@ -2073,9 +2098,10 @@ static int do_start_long_poll(microlink_t *ml, ml_noise_state_t *noise) {
 
     /* Hostinfo - REQUIRED by control plane even for Stream=true.
      * V1 includes this; without it, server may not keep us "online". */
-    cJSON *hostinfo = hostinfo_new(ml);
-    if (hostinfo) {
-        cJSON_AddItemToObject(root, "Hostinfo", hostinfo);
+    cJSON *hostinfo = add_hostinfo(ml, root);
+    if (!hostinfo) {
+        cJSON_Delete(root);
+        return -1;
     }
 
     /* NetInfo: tell control plane our preferred DERP region and NAT type.
@@ -2173,18 +2199,18 @@ static int do_send_endpoint_update(microlink_t *ml, ml_noise_state_t *noise) {
     cJSON_AddStringToObject(root, "Compress", "");
 
     /* Hostinfo (required — control plane reads NetInfo from here) */
-    cJSON *hostinfo = hostinfo_new(ml);
-    if (hostinfo) {
-        cJSON_AddItemToObject(root, "Hostinfo", hostinfo);
-
-        cJSON *netinfo = cJSON_CreateObject();
-        if (netinfo) {
-            cJSON_AddNumberToObject(netinfo, "PreferredDERP", ML_DERP_REGION);
-            if (ml->stun_nat_checked) {
-                cJSON_AddBoolToObject(netinfo, "MappingVariesByDestIP", ml->nat_mapping_varies);
-            }
-            cJSON_AddItemToObject(hostinfo, "NetInfo", netinfo);
+    cJSON *hostinfo = add_hostinfo(ml, root);
+    if (!hostinfo) {
+        cJSON_Delete(root);
+        return -1;
+    }
+    cJSON *netinfo = cJSON_CreateObject();
+    if (netinfo) {
+        cJSON_AddNumberToObject(netinfo, "PreferredDERP", ML_DERP_REGION);
+        if (ml->stun_nat_checked) {
+            cJSON_AddBoolToObject(netinfo, "MappingVariesByDestIP", ml->nat_mapping_varies);
         }
+        cJSON_AddItemToObject(hostinfo, "NetInfo", netinfo);
     }
 
     /* Endpoints + EndpointTypes */
