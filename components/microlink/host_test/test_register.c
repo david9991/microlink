@@ -450,22 +450,24 @@ static void read_every_frames_prefix(void) {
 
 static void hostinfo_os_is_fixed_with_the_keys(void) {
     const char *configured = "freertos";
+    const char *unstored = "linux";
     /* New keys report what the build says, whatever was stored before them */
     const char *stored_before[] = {NULL, "", "linux", "freertos", "windows"};
     for (size_t i = 0; i < sizeof stored_before / sizeof stored_before[0]; i++) {
-        CHECK(ml_register_hostinfo_os(true, stored_before[i], configured) == configured,
+        CHECK(ml_register_hostinfo_os(true, stored_before[i], configured, unstored) == configured,
               "new keys, stored %s", stored_before[i] ? stored_before[i] : "(none)");
     }
     /* Keys already made report the OS stored with them, not the build's */
     const char *stored = "freertos";
-    CHECK(ml_register_hostinfo_os(false, stored, "linux") == stored, "stored freertos");
+    CHECK(ml_register_hostinfo_os(false, stored, "linux", unstored) == stored, "stored freertos");
     const char *other = "zephyr";
-    CHECK(ml_register_hostinfo_os(false, other, configured) == other, "stored zephyr");
-    /* ...and keys with none stored report the OS every build reported before
-     * one was: a node enrolled then is held to it */
-    CHECK(strcmp(ml_register_hostinfo_os(false, NULL, configured), "linux") == 0, "none stored");
-    CHECK(strcmp(ml_register_hostinfo_os(false, "", configured), "linux") == 0, "empty stored");
-    CHECK(strcmp(ML_HOSTINFO_OS_UNSTORED, "linux") == 0, "the unstored OS");
+    CHECK(ml_register_hostinfo_os(false, other, configured, unstored) == other, "stored zephyr");
+    /* ...and keys with none stored report what the build is told they were
+     * registered with: neither the OS it gives new keys, nor a fixed one */
+    CHECK(ml_register_hostinfo_os(false, NULL, configured, unstored) == unstored, "none stored");
+    CHECK(ml_register_hostinfo_os(false, "", configured, unstored) == unstored, "empty stored");
+    CHECK(ml_register_hostinfo_os(false, NULL, "linux", configured) == configured,
+          "none stored, keys made by a build that reported freertos");
 }
 
 static void read_every_address(void) {

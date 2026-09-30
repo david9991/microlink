@@ -57,7 +57,8 @@ static void generate_keypair(uint8_t *private_key, uint8_t *public_key) {
 /* The OS the node reports, fixed with its keys (ml_register_hostinfo_os) */
 static void set_hostinfo_os(microlink_t *ml, bool new_keys, const char *stored) {
     snprintf(ml->hostinfo_os, sizeof(ml->hostinfo_os), "%s",
-             ml_register_hostinfo_os(new_keys, stored, CONFIG_ML_HOSTINFO_OS));
+             ml_register_hostinfo_os(new_keys, stored, CONFIG_ML_HOSTINFO_OS,
+                                     CONFIG_ML_HOSTINFO_OS_UNSTORED));
     ESP_LOGI(TAG, "Reports OS \"%s\"%s", ml->hostinfo_os,
              new_keys || (stored && stored[0]) ? ""
                                                : " (its keys were registered before an OS was stored with them)");

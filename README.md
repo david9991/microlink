@@ -555,6 +555,8 @@ MicroLink V2 Configuration
 | `ML_MAX_PEERS` | `16` | Slots in the peer table (1-64), each with its WireGuard tunnel; WireGuard's own peer count follows it. A slot takes about 1.2 KB on a 32-bit target (264 bytes of the instance, 904 of the WireGuard device). A tailnet with more peers leaves the rest out, with a warning each — see [Large tailnets](docs/LARGE_TAILNET.md). Reduce to 8 for non-PSRAM. |
 | `ML_NVS_MAX_PEERS` | `64` | Peers cached in NVS flash (16-1024). Persists across reboots so DISCO probing starts immediately. Each entry: 92 bytes. LRU eviction when full. |
 | `ML_PRIORITY_PEER_IP` | Empty | Priority peer VPN IP (e.g., `100.x.y.z`): kept a slot even when the peer table is full — a peer that is not kept gives way. Also settable via web UI; `microlink_keep_peers()` replaces it. |
+| `ML_HOSTINFO_OS` | `freertos` | The OS a node reports to the control server (Hostinfo.OS) when this build makes its keys. It is stored with the keys, and the node reports the stored OS ever after: the control server gives a node that reports another OS than it last connected with no address. |
+| `ML_HOSTINFO_OS_UNSTORED` | `linux` | The OS a node reports whose keys have none stored with them — keys made by a build before the OS was stored. See [Authorised, and no address](#authorised-and-no-address). |
 | `ML_H2_BUFFER_SIZE_KB` | `512` | H2 receive buffer (64-2048 KB, PSRAM-backed). Size determines max tailnet: 64KB ≈ 30 peers, 512KB ≈ 300 peers, 2048KB ≈ 1200 peers. |
 | `ML_JSON_BUFFER_SIZE_KB` | `512` | JSON parse buffer (64-2048 KB, PSRAM-backed). cJSON DOM uses 2-3x raw JSON size. Match to H2 buffer. |
 
@@ -662,6 +664,12 @@ Zero-copy mode contributed by [dj-oyu](https://github.com/dj-oyu/microlink).
 - Ensure WiFi is connected (or cellular registered)
 - Check coordination server connection in logs
 - Try a fresh auth key from https://login.tailscale.com/admin/settings/keys
+
+### Authorised, and no address
+
+The node registers, the control server authorises it, and it never reaches `ML_STATE_CONNECTED`; the log carries `Control server: node OS changed since last connection, was node state copied between devices?` and `MapResponse gives this node no IPv4 address`. The control server holds a node to the OS it last connected with, and this build reports another.
+
+A node reports the OS stored with its keys. Keys made before the OS was stored have none, and report `ML_HOSTINFO_OS_UNSTORED`, which must be what the build that made them reported: `linux` for a build before 3908474, and the build's own `ML_HOSTINFO_OS` (`freertos` unless it was changed) for one from 3908474 to 6167633. Set `ML_HOSTINFO_OS_UNSTORED` to the other one and start the node again: its keys are not touched, and it needs no new auth key.
 
 ### `tailscale ping` times out
 - Verify DISCO and DERP are enabled in config

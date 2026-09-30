@@ -83,9 +83,26 @@ menu "MicroLink V2 Configuration"
             stored with its keys ever after, whatever a later build says:
             the control server gives a node that reports an OS other than
             the one it last connected with no address and no peers. Keys
-            made before an OS was stored report "linux". The OS version
-            (ESP-IDF's version and the target) and the architecture are
-            taken from the build.
+            with no OS stored report ML_HOSTINFO_OS_UNSTORED. The OS
+            version (ESP-IDF's version and the target) and the architecture
+            are taken from the build.
+
+    config ML_HOSTINFO_OS_UNSTORED
+        string "OS a node reports whose keys have none stored"
+        default "linux"
+        help
+            Hostinfo.OS of a node whose keys were made by a build that did
+            not store the OS with them. It must be the OS that build
+            reported, which the control server still holds the node to:
+            "linux" for a build before 3908474, and the build's own
+            ML_HOSTINFO_OS ("freertos" by default) for one from 3908474 to
+            6167633.
+
+            A node that reports the wrong one registers, is authorised, and
+            is given no address ("node OS changed since last connection" in
+            the control server's Health, which the log carries): set this
+            to the other one and start it again. Its keys are not touched,
+            and no new auth key is needed.
 
     config ML_MAX_PEERS
         int "Slots in the peer table"

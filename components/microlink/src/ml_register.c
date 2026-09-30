@@ -30,14 +30,15 @@ microlink_registration_t ml_register_classify(const ml_register_reply_t *reply) 
     return ML_REGISTRATION_AUTHORIZED;
 }
 
-const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const char *configured) {
+const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const char *configured,
+                                    const char *unstored) {
     if (new_keys) {
         return configured;
     }
     if (stored != NULL && stored[0] != '\0') {
         return stored;
     }
-    return ML_HOSTINFO_OS_UNSTORED;
+    return unstored;
 }
 
 /* A decimal number of 1 to 3 digits at most `max`, from *p; -1 if none */
