@@ -95,6 +95,7 @@ typedef enum {
     ML_MAP_NONE = 0,    /* no map read yet */
     ML_MAP_SERVED,      /* its tailnet address */
     ML_MAP_UNSERVED,    /* no IPv4 address: the control server does not serve the node */
+    ML_MAP_OVERSIZED,   /* it did not fit the node's buffers, and could not be read */
 } microlink_map_t;
 
 /* Callback types */
@@ -243,9 +244,16 @@ microlink_registration_t microlink_get_registration(const microlink_t *ml, bool 
  * no DERP map, the reason in its Health (logged at WARN). That map is
  * ML_MAP_UNSERVED: the fetch fails — or the session ends, when a streaming
  * update takes the address away — and the instance registers again, after a
- * minute, then two, up to fifteen: nothing it does changes the answer. The
- * answer stands through those reconnects, whatever microlink_get_state()
- * says meanwhile, until a map gives the node an address.
+ * minute, then two, up to fifteen: nothing it does changes the answer.
+ *
+ * ML_MAP_OVERSIZED is a first map larger than ML_H2_BUFFER_SIZE_KB or
+ * ML_JSON_BUFFER_SIZE_KB: it is cut at the buffer's end and cannot be read,
+ * the fetch fails, and the instance registers again at the same pace — the
+ * map stays as large until the tailnet shrinks, its policy shows the node
+ * fewer peers, or a build has larger buffers.
+ *
+ * Either answer stands through those reconnects, whatever
+ * microlink_get_state() says meanwhile, until a map is read.
  */
 microlink_map_t microlink_get_map(const microlink_t *ml);
 

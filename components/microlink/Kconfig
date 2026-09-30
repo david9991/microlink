@@ -176,6 +176,11 @@ menu "MicroLink V2 Configuration"
             - 1024: ~600 peers (large enterprise tailnets)
             - 2048: ~1200 peers (very large tailnets, requires 8MB PSRAM)
 
+            A first map that does not fit is cut at the buffer's end and
+            cannot be read: the node does not join, microlink_get_map()
+            answers ML_MAP_OVERSIZED, and it registers again a minute
+            later, then two, up to fifteen.
+
     config ML_JSON_BUFFER_SIZE_KB
         int "JSON parse buffer size (KB)"
         default 512

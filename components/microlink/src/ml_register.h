@@ -214,23 +214,49 @@ typedef enum {
  */
 ml_map_address_t ml_register_map_address(bool first, bool node, bool listed, uint32_t ip);
 
+/**
+ * @brief Whether the last map's answer is one that trying again does not
+ *        change: no address for the node (ML_MAP_UNSERVED), or a map larger
+ *        than the node's buffers (ML_MAP_OVERSIZED)
+ */
+bool ml_register_map_lasting(microlink_map_t map);
+
 /* The longest wait before the control server is connected to again */
 #define ML_CTRL_BACKOFF_MAX_MS          30000
-/* ... and for a node the control server's last map gave no address: the
- * first wait, and the longest */
-#define ML_CTRL_BACKOFF_UNSERVED_MS     60000
-#define ML_CTRL_BACKOFF_UNSERVED_MAX_MS 900000
+/* ... and while the last map's answer is a lasting one: the first wait, and
+ * the longest */
+#define ML_CTRL_BACKOFF_LASTING_MS      60000
+#define ML_CTRL_BACKOFF_LASTING_MAX_MS  900000
 
 /**
  * @brief How long to wait before connecting to the control server again
- * @param attempts How many reconnects were made since the last session
- * @param unserved The control server's last map gave the node no address
- * @return 1 s doubling to ML_CTRL_BACKOFF_MAX_MS; for an unserved node
- *         ML_CTRL_BACKOFF_UNSERVED_MS doubling to
- *         ML_CTRL_BACKOFF_UNSERVED_MAX_MS: nothing the node does changes
+ * @param attempts How many reconnects were made before this one
+ * @param lasting The last map's answer is a lasting one
+ *        (ml_register_map_lasting)
+ * @return 1 s doubling to ML_CTRL_BACKOFF_MAX_MS; with a lasting answer
+ *         ML_CTRL_BACKOFF_LASTING_MS doubling to
+ *         ML_CTRL_BACKOFF_LASTING_MAX_MS: nothing the node does changes
  *         that answer, and each try is a registration
  */
-uint32_t ml_register_backoff_ms(int attempts, bool unserved);
+uint32_t ml_register_backoff_ms(int attempts, bool lasting);
+
+/* The reconnects made since the last session, and what they wait for */
+typedef struct {
+    int attempts;
+    bool lasting;
+} ml_backoff_t;
+
+/**
+ * @brief The wait before the next reconnect, which is then counted
+ * @param backoff The reconnects so far; all zero after a session
+ * @param lasting The last map's answer is a lasting one, now
+ * @return ml_register_backoff_ms of the reconnects made for the same
+ *         reason: when `lasting` changes the count starts again, so the
+ *         first wait of a node that just became unserved is the first
+ *         lasting one, however many reconnects came before, and a node
+ *         served again goes back to a second
+ */
+uint32_t ml_register_backoff_next(ml_backoff_t *backoff, bool lasting);
 
 /* The most of a control server's message that is logged, its NUL included */
 #define ML_HEALTH_TEXT_MAX 201

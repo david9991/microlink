@@ -169,14 +169,26 @@ ml_map_address_t ml_register_map_address(bool first, bool node, bool listed, uin
     return first || listed ? ML_MAP_ADDRESS_NONE : ML_MAP_ADDRESS_UNCHANGED;
 }
 
-uint32_t ml_register_backoff_ms(int attempts, bool unserved) {
-    const uint32_t first = unserved ? ML_CTRL_BACKOFF_UNSERVED_MS : 1000;
-    const uint32_t max = unserved ? ML_CTRL_BACKOFF_UNSERVED_MAX_MS : ML_CTRL_BACKOFF_MAX_MS;
+bool ml_register_map_lasting(microlink_map_t map) {
+    return map == ML_MAP_UNSERVED || map == ML_MAP_OVERSIZED;
+}
+
+uint32_t ml_register_backoff_ms(int attempts, bool lasting) {
+    const uint32_t first = lasting ? ML_CTRL_BACKOFF_LASTING_MS : 1000;
+    const uint32_t max = lasting ? ML_CTRL_BACKOFF_LASTING_MAX_MS : ML_CTRL_BACKOFF_MAX_MS;
     uint32_t wait = first;
     for (int i = 0; i < attempts && wait < max; i++) {
         wait *= 2;
     }
     return wait < max ? wait : max;
+}
+
+uint32_t ml_register_backoff_next(ml_backoff_t *backoff, bool lasting) {
+    if (backoff->lasting != lasting) {
+        backoff->attempts = 0;
+        backoff->lasting = lasting;
+    }
+    return ml_register_backoff_ms(backoff->attempts++, lasting);
 }
 
 void ml_register_printable(char *out, size_t size, const char *text) {

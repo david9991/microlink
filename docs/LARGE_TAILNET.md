@@ -59,8 +59,10 @@ Large peer lists require larger HTTP/2 response buffers:
 idf.py menuconfig → MicroLink V2 → Coord buffer size (KB)
 ```
 
-- Default: 64KB (sufficient for ~200 peers)
-- Large tailnets: 512KB (PSRAM-backed)
+- 64KB: ~30 peers
+- Default: 512KB, ~300 peers (PSRAM-backed)
+
+The first map must fit both `ML_H2_BUFFER_SIZE_KB` and `ML_JSON_BUFFER_SIZE_KB` whole. One that does not is cut at the buffer's end and cannot be read: the node does not join, `microlink_get_map()` answers `ML_MAP_OVERSIZED`, the log says `MapResponse larger than its buffers`, and the node registers again a minute later, then two, up to fifteen.
 
 Already configured in `microlink_internal.h`:
 - H2 WINDOW_UPDATE: proactive updates for responses >64KB

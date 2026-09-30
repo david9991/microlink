@@ -756,25 +756,49 @@ static void what_a_map_says_of_the_address(void) {
 }
 
 static void waits_before_a_reconnect(void) {
-    const uint32_t served[] = {1000, 2000, 4000, 8000, 16000, 30000, 30000};
+    const uint32_t passing[] = {1000, 2000, 4000, 8000, 16000, 30000, 30000};
     for (int i = 0; i < 7; i++) {
-        CHECK(ml_register_backoff_ms(i, false) == served[i], "attempt %d: %u ms", i,
+        CHECK(ml_register_backoff_ms(i, false) == passing[i], "attempt %d: %u ms", i,
               (unsigned)ml_register_backoff_ms(i, false));
     }
-    const uint32_t unserved[] = {60000, 120000, 240000, 480000, 900000, 900000};
+    const uint32_t lasting[] = {60000, 120000, 240000, 480000, 900000, 900000};
     for (int i = 0; i < 6; i++) {
-        CHECK(ml_register_backoff_ms(i, true) == unserved[i], "unserved, attempt %d: %u ms", i,
+        CHECK(ml_register_backoff_ms(i, true) == lasting[i], "lasting, attempt %d: %u ms", i,
               (unsigned)ml_register_backoff_ms(i, true));
     }
     /* The longest waits are reached, and never passed, however many attempts */
     for (int i = 0; i < 100000; i += 997) {
         CHECK(ml_register_backoff_ms(i, false) <= ML_CTRL_BACKOFF_MAX_MS, "attempt %d", i);
-        CHECK(ml_register_backoff_ms(i, true) <= ML_CTRL_BACKOFF_UNSERVED_MAX_MS, "unserved %d", i);
+        CHECK(ml_register_backoff_ms(i, true) <= ML_CTRL_BACKOFF_LASTING_MAX_MS, "lasting %d", i);
     }
     CHECK(ml_register_backoff_ms(1 << 30, false) == ML_CTRL_BACKOFF_MAX_MS, "many attempts");
-    CHECK(ml_register_backoff_ms(1 << 30, true) == ML_CTRL_BACKOFF_UNSERVED_MAX_MS,
-          "unserved, many attempts");
+    CHECK(ml_register_backoff_ms(1 << 30, true) == ML_CTRL_BACKOFF_LASTING_MAX_MS,
+          "lasting, many attempts");
     CHECK(ml_register_backoff_ms(-1, false) == 1000, "no attempt yet");
+
+    /* Which of a map's answers last: no address, and a map too large */
+    CHECK(!ml_register_map_lasting(ML_MAP_NONE) && !ml_register_map_lasting(ML_MAP_SERVED),
+          "no map yet, and a map with an address");
+    CHECK(ml_register_map_lasting(ML_MAP_UNSERVED) && ml_register_map_lasting(ML_MAP_OVERSIZED),
+          "no address, and a map too large");
+
+    /* A run of reconnects: each wait counted, from the first */
+    ml_backoff_t backoff = {0};
+    for (int i = 0; i < 7; i++) {
+        CHECK(ml_register_backoff_next(&backoff, false) == passing[i], "reconnect %d", i);
+        CHECK(backoff.attempts == i + 1, "reconnect %d counted %d", i, backoff.attempts);
+    }
+    /* The node becomes unserved after them: its first wait is the first
+     * lasting one, not the longest */
+    for (int i = 0; i < 6; i++) {
+        CHECK(ml_register_backoff_next(&backoff, true) == lasting[i], "unserved, reconnect %d", i);
+    }
+    /* ... and served again, it is back to a second */
+    CHECK(ml_register_backoff_next(&backoff, false) == 1000, "served again");
+    CHECK(ml_register_backoff_next(&backoff, false) == 2000, "served again, the second");
+    /* After a session the count is zero again */
+    backoff = (ml_backoff_t){0};
+    CHECK(ml_register_backoff_next(&backoff, true) == 60000, "after a session, unserved");
 }
 
 static void a_servers_message_is_made_fit_to_log(void) {

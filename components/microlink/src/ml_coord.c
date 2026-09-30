@@ -1714,6 +1714,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     uint64_t recv_start_ms = ml_get_time_ms();
     uint64_t last_progress_ms = recv_start_ms;
     size_t window_consumed = 0;
+    bool oversized = false;  /* the map did not fit a buffer */
 
     /* Read all Noise frames and accumulate decrypted H2 data.
      * Scan for H2 END_STREAM flag (0x01) on DATA frames to know when the
@@ -1736,7 +1737,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             h2_total += frame_len;
             window_consumed += frame_len;
         } else {
-            ESP_LOGW(TAG, "H2 buffer full at %dKB, truncating", (int)(h2_total / 1024));
+            oversized = true;
             free(frame_buf);
             break;
         }
@@ -1825,6 +1826,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             if (json_total + f_len < ML_JSON_BUFFER_SIZE) {
                 memcpy(resp_buf + json_total, h2_recv + fpos, f_len);
                 json_total += f_len;
+            } else {
+                oversized = true;
             }
         }
 
@@ -1833,6 +1836,17 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     /* Its status: an error's body is no map, whatever JSON it carries */
     const int map_status = ml_h2_final_status(h2_recv, h2_total, 3);
     free(h2_recv);
+
+    /* A map cut at a buffer's end cannot be read, and the next one will be
+     * as large: a lasting answer, like a map with no address */
+    if (oversized) {
+        ml->map = ML_MAP_OVERSIZED;
+        ESP_LOGW(TAG, "MapResponse larger than its buffers (ML_H2_BUFFER_SIZE_KB %d, "
+                      "ML_JSON_BUFFER_SIZE_KB %d): it cannot be read",
+                 CONFIG_ML_H2_BUFFER_SIZE_KB, CONFIG_ML_JSON_BUFFER_SIZE_KB);
+        free(resp_buf);
+        return -1;
+    }
 
     /* Send connection-level WINDOW_UPDATE to replenish HTTP/2 flow control.
      * Stream 3 is already closed (END_STREAM received), so only update stream 0.
@@ -2476,7 +2490,7 @@ void ml_coord_task(void *arg) {
     coord_state_t state = COORD_IDLE;
     ml_coord_cmd_t cmd;
     uint64_t last_activity_ms = ml_get_time_ms();
-    int reconnect_attempts = 0;
+    ml_backoff_t backoff = {0};
 
     /* Noise protocol state - owned exclusively by this task */
     ml_noise_state_t noise = {0};
@@ -2660,7 +2674,7 @@ void ml_coord_task(void *arg) {
 
             state = COORD_LONG_POLL;
             ml->state = ML_STATE_CONNECTED;
-            reconnect_attempts = 0;
+            backoff = (ml_backoff_t){0};
             last_activity_ms = ml_get_time_ms();
 
             /* Notify app */
@@ -2894,13 +2908,14 @@ void ml_coord_task(void *arg) {
 
         case COORD_RECONNECTING:
             {
-                /* A node the last map gave no address waits minutes, not
-                 * seconds: each try is a registration, answered the same */
+                /* A node whose last map gave it no address, or did not fit,
+                 * waits minutes, not seconds: each try is a registration,
+                 * answered the same */
                 const uint32_t backoff_ms =
-                    ml_register_backoff_ms(reconnect_attempts, ml->map == ML_MAP_UNSERVED);
+                    ml_register_backoff_next(&backoff, ml_register_map_lasting(ml->map));
 
                 ESP_LOGI(TAG, "Reconnecting in %lu ms (attempt %d)",
-                         (unsigned long)backoff_ms, reconnect_attempts + 1);
+                         (unsigned long)backoff_ms, backoff.attempts);
 
                 ml->state = ML_STATE_RECONNECTING;
 
@@ -2913,8 +2928,6 @@ void ml_coord_task(void *arg) {
                         break;
                     }
                 }
-
-                reconnect_attempts++;
 
                 /* Close old connection */
                 if (ml->coord_sock >= 0) {
