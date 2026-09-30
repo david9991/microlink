@@ -1034,43 +1034,32 @@ bool microlink_map_applied(const microlink_t *ml) {
 }
 
 esp_err_t microlink_keep_peers(microlink_t *ml, const microlink_keep_t *peers, int count) {
-    if (!ml || count < 0 || count > ML_KEEP_PEERS_MAX || (count > 0 && !peers)) {
+    if (!ml || !ml_keep_valid(peers, count)) {
         return ESP_ERR_INVALID_ARG;
     }
-    for (int i = 0; i < count; i++) {
-        const size_t len = strnlen(peers[i].name, sizeof(peers[i].name));
-        if (peers[i].vpn_ip == 0 && (len == 0 || len == sizeof(peers[i].name))) {
-            return ESP_ERR_INVALID_ARG;
-        }
-    }
-    /* Each peer is kept as an address, or as a name and nothing after it,
-     * written straight into the instance: a caller's task has no room to
-     * spare for a copy of the set. */
+    /* The set is compared and kept in place (ml_keep_replace): a caller's
+     * task has no room to spare for a copy of it. A fetch that could not be
+     * asked for stays due, and the next call asks again. */
     ml_peers_lock(ml);
-    bool changed = count != ml->keep_count;
-    for (int i = 0; i < ML_KEEP_PEERS_MAX; i++) {
-        microlink_keep_t *k = &ml->keep[i];
-        const bool named = i < count && peers[i].vpn_ip == 0;
-        const uint32_t vpn_ip = i < count ? peers[i].vpn_ip : 0;
-        const char *name = named ? peers[i].name : "";
-        if (k->vpn_ip == vpn_ip && strcmp(k->name, name) == 0) continue;
-        changed = true;
-        memset(k, 0, sizeof(*k));
-        k->vpn_ip = vpn_ip;
-        strcpy(k->name, name);
+    if (ml_keep_replace(ml->keep, &ml->keep_count, peers, count, ml->peers, ml->peer_count,
+                        ml->own_domain, ml->map_applied)) {
+        ml->keep_fetch_due = true;
     }
-    ml->keep_count = count;
-    /* A kept peer the table does not hold comes with a full map only: the
-     * first one, when none was applied yet */
-    const bool fetch = changed && ml->map_applied &&
-                       ml_keep_missing(ml->peers, ml->peer_count, ml->keep, ml->keep_count,
-                                       ml->own_domain);
+    const bool fetch = ml->keep_fetch_due;
     ml_peers_unlock(ml);
-    if (fetch) {
-        ESP_LOGI(TAG, "A kept peer is not in the peer table: fetching the full map again");
-        ml_coord_cmd_t cmd = ML_CMD_FORCE_RECONNECT;
-        xQueueSend(ml->coord_cmd_queue, &cmd, pdMS_TO_TICKS(100));
+    if (!fetch) {
+        return ESP_OK;
     }
+    ml_coord_cmd_t cmd = ML_CMD_FORCE_RECONNECT;
+    if (xQueueSend(ml->coord_cmd_queue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "A kept peer is not in the peer table, and the full map could not be "
+                      "asked for: the next call asks again");
+        return ESP_ERR_TIMEOUT;
+    }
+    ml_peers_lock(ml);
+    ml->keep_fetch_due = false;
+    ml_peers_unlock(ml);
+    ESP_LOGI(TAG, "A kept peer is not in the peer table: fetching the full map again");
     return ESP_OK;
 }
 

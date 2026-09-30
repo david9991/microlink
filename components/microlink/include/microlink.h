@@ -348,9 +348,11 @@ uint32_t microlink_resolve(const microlink_t *ml, const char *hostname);
  * @param ml Handle
  * @param peers The peers, copied (may be NULL when count is 0)
  * @param count How many: at most ML_KEEP_PEERS_MAX
- * @return ESP_OK, or ESP_ERR_INVALID_ARG for more than that, or for a peer
+ * @return ESP_OK; ESP_ERR_INVALID_ARG for more than that, or for a peer
  *         with neither an address nor a name that ends within its field
- *         (nothing changed)
+ *         (nothing changed); ESP_ERR_TIMEOUT when the set is kept and the
+ *         full map it needs could not be asked for — the next call, with
+ *         any set, asks again
  *
  * The peer table has CONFIG_ML_MAX_PEERS slots. A tailnet with more peers
  * than that leaves the rest out — those the control server lists after the
@@ -365,9 +367,11 @@ uint32_t microlink_resolve(const microlink_t *ml, const char *hostname);
  * The call replaces the set; config.priority_peer_ip is the set until the
  * first call. It may come before microlink_start() or while the instance
  * runs: when, after a full map was applied, the new set names a peer the
- * table does not hold, the instance reconnects to the control server for the
- * full map — the tunnels stay up — and the peer takes its slot as that map
- * lists it.
+ * set before did not, and the table does not hold it, the instance
+ * reconnects to the control server for the full map — the tunnels stay up —
+ * and the peer takes its slot as that map lists it. The same set named
+ * again reconnects nothing, and a name that stands for no peer of the
+ * tailnet costs one reconnect, when it is first named.
  */
 esp_err_t microlink_keep_peers(microlink_t *ml, const microlink_keep_t *peers, int count);
 

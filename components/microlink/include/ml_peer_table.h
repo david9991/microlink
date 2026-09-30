@@ -177,10 +177,33 @@ int ml_peers_slot(const ml_peer_t *peers, int slots, const microlink_keep_t *kee
                   int keep_count, const char *own_domain, bool kept);
 
 /**
- * @brief Whether a kept peer has no slot: an address no peer of the table
- *        has, or a name ml_peers_resolve finds at none
- * @param peers The table
- * @param count Its count of slots in use
+ * @brief Whether a set of peers is one microlink_keep_peers takes: at most
+ *        ML_KEEP_PEERS_MAX, each with an address, or a name that is not
+ *        empty and ends within its field
  */
-bool ml_keep_missing(const ml_peer_t *peers, int count, const microlink_keep_t *keep,
-                     int keep_count, const char *own_domain);
+bool ml_keep_valid(const microlink_keep_t *peers, int count);
+
+/**
+ * @brief Replace the kept peers, in place, and say whether the full map
+ *        must be fetched for them
+ * @param keep The kept peers, ML_KEEP_PEERS_MAX entries: rewritten, each an
+ *        address, or a name and nothing after it; the rest empty
+ * @param keep_count How many: rewritten
+ * @param peers The new set, valid (ml_keep_valid), and not `keep` itself
+ * @param count How many
+ * @param table The peer table
+ * @param table_count Its count of slots in use
+ * @param own_domain As ml_peers_resolve takes it
+ * @param map_applied A full map was applied; until one is, the first map is
+ *        still to come, and brings every kept peer it lists
+ * @return true when the new set names a peer the old one did not — by that
+ *         address, or by that name in any case — and the table holds no
+ *         such peer: an address no peer of it has, or a name
+ *         ml_peers_resolve finds at none. Such a peer comes with a full map
+ *         only. The same set named again asks for nothing, and neither does
+ *         a peer that was named and missing before: one name that stands
+ *         for no peer of the tailnet does not make every later call a fetch.
+ */
+bool ml_keep_replace(microlink_keep_t *keep, int *keep_count, const microlink_keep_t *peers,
+                     int count, const ml_peer_t *table, int table_count,
+                     const char *own_domain, bool map_applied);

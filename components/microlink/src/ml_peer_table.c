@@ -150,18 +150,56 @@ int ml_peers_slot(const ml_peer_t *peers, int slots, const microlink_keep_t *kee
     return gives_way;
 }
 
-bool ml_keep_missing(const ml_peer_t *peers, int count, const microlink_keep_t *keep,
-                     int keep_count, const char *own_domain) {
-    for (int k = 0; k < keep_count; k++) {
-        if (keep[k].vpn_ip == 0) {
-            if (ml_peers_resolve(peers, count, own_domain, keep[k].name) == 0) return true;
-            continue;
-        }
-        bool held = false;
-        for (int i = 0; i < count && !held; i++) {
-            held = peers[i].active && peers[i].vpn_ip == keep[k].vpn_ip;
-        }
-        if (!held) return true;
+bool ml_keep_valid(const microlink_keep_t *peers, int count) {
+    if (count < 0 || count > ML_KEEP_PEERS_MAX || (count > 0 && !peers)) return false;
+    for (int i = 0; i < count; i++) {
+        if (peers[i].vpn_ip != 0) continue;
+        const void *end = memchr(peers[i].name, '\0', sizeof(peers[i].name));
+        if (!end || end == peers[i].name) return false;
+    }
+    return true;
+}
+
+/* Whether the table holds the peer `k` names: a peer at its address, or the
+ * one its name resolves to */
+static bool keep_held(const ml_peer_t *peers, int count, const char *own_domain,
+                      const microlink_keep_t *k) {
+    if (k->vpn_ip == 0) return ml_peers_resolve(peers, count, own_domain, k->name) != 0;
+    for (int i = 0; i < count; i++) {
+        if (peers[i].active && peers[i].vpn_ip == k->vpn_ip) return true;
     }
     return false;
+}
+
+/* Whether two entries name a peer the same way: the same address, or the
+ * same name in any case */
+static bool keep_same(const microlink_keep_t *a, const microlink_keep_t *b) {
+    if (a->vpn_ip != 0 || b->vpn_ip != 0) return a->vpn_ip == b->vpn_ip;
+    return same_name(a->name, b->name, sizeof(a->name));
+}
+
+bool ml_keep_replace(microlink_keep_t *keep, int *keep_count, const microlink_keep_t *peers,
+                     int count, const ml_peer_t *table, int table_count,
+                     const char *own_domain, bool map_applied) {
+    /* What the new set names that the old one did not, and the table lacks:
+     * read before the old set is written over */
+    bool fetch = false;
+    for (int i = 0; i < count && map_applied && !fetch; i++) {
+        bool named_before = false;
+        for (int j = 0; j < *keep_count && !named_before; j++) {
+            named_before = keep_same(&peers[i], &keep[j]);
+        }
+        fetch = !named_before && !keep_held(table, table_count, own_domain, &peers[i]);
+    }
+    /* Each entry as it is kept: an address, or a name and nothing after it */
+    for (int i = 0; i < ML_KEEP_PEERS_MAX; i++) {
+        const uint32_t vpn_ip = i < count ? peers[i].vpn_ip : 0;
+        const char *name = i < count && vpn_ip == 0 ? peers[i].name : "";
+        if (keep[i].vpn_ip == vpn_ip && strcmp(keep[i].name, name) == 0) continue;
+        memset(&keep[i], 0, sizeof(keep[i]));
+        keep[i].vpn_ip = vpn_ip;
+        strcpy(keep[i].name, name);
+    }
+    *keep_count = count;
+    return fetch;
 }

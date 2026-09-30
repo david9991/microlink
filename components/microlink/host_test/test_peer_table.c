@@ -1,7 +1,7 @@
 /*
  * Host tests of the peer table's pure logic (ml_peer_table.c): what a full
- * map's BEGIN and END do to it, which peer a name resolves to, and which
- * slot a peer takes in a full table.
+ * map's BEGIN and END do to it, which peer a name resolves to, which slot
+ * a peer takes in a full table, and what naming the kept peers asks for.
  * Run by run.sh with the host's C compiler.
  */
 #include <ctype.h>
@@ -426,8 +426,6 @@ static void kept_peers(void) {
     peer(0, "a.tail1.ts.net", 0x64400010, false);
     peer(2, "c.tail1.ts.net", 0x64400012, false);
     CHECK(slot(false) == 1 && slot(true) == 1, "the first free slot");
-    CHECK(!ml_keep_missing(peers, count, keep, 0, own), "nothing kept, nothing missing");
-    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "kept peers the table lacks");
 
     /* A full table: a peer not kept is left out; a kept one takes the slot
      * of a peer not kept — never a kept peer's */
@@ -469,22 +467,104 @@ static void kept_peers(void) {
     CHECK(slot(true) == 1, "nor does a cut name: %d", slot(true));
     peers[1].name_cut = false;
 
-    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "two kept names have no peer");
-    peer(2, "shared-box.other.ts.net", 0x64500002, false);
-    peer(3, "build.tail1.ts.net", 0x64400007, false);
-    CHECK(!ml_keep_missing(peers, count, keep, keeps, own), "every kept peer has a slot");
-    peers[0].active = false;
-    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "the kept address has none");
-    peers[0].active = true;
-    peers[3].cached = true;
-    CHECK(ml_keep_missing(peers, count, keep, keeps, own), "a cached peer answers to no name");
-    peers[3].cached = false;
-
     /* Every slot a kept peer's: a further kept peer is left out too */
     keeps = 0;
     for (int i = 0; i < PEERS; i++) keep_address(peers[i].vpn_ip);
     CHECK(slot(true) == -1, "all kept: left out");
     keeps = 0;
+}
+
+/* The set microlink_keep_peers is given, and the fetch it asks for */
+static microlink_keep_t held[ML_KEEP_PEERS_MAX];
+static int helds;
+
+static bool replace_kept(bool map_applied) {
+    return ml_keep_replace(held, &helds, keep, keeps, peers, count, own, map_applied);
+}
+
+static void naming_the_kept_peers(void) {
+    /* What is taken: up to ML_KEEP_PEERS_MAX, each an address or a name
+     * that is not empty and ends within its field */
+    microlink_keep_t set[ML_KEEP_PEERS_MAX + 1];
+    memset(set, 0, sizeof set);
+    CHECK(ml_keep_valid(NULL, 0) && ml_keep_valid(set, 0), "none");
+    CHECK(!ml_keep_valid(NULL, 1), "one, and no set");
+    CHECK(!ml_keep_valid(set, -1), "fewer than none");
+    CHECK(!ml_keep_valid(set, 1), "neither an address nor a name");
+    set[0].vpn_ip = 0x64400001;
+    memset(set[0].name, 'x', sizeof set[0].name);  /* not read: it has an address */
+    CHECK(ml_keep_valid(set, 1), "an address");
+    memset(set[1].name, 'n', sizeof set[1].name);
+    CHECK(!ml_keep_valid(set, 2), "a name that does not end");
+    set[1].name[sizeof set[1].name - 1] = '\0';
+    CHECK(ml_keep_valid(set, 2), "the longest name");
+    for (int i = 2; i <= ML_KEEP_PEERS_MAX; i++) set[i].vpn_ip = 0x64400001 + (uint32_t)i;
+    CHECK(ml_keep_valid(set, ML_KEEP_PEERS_MAX), "as many as are taken");
+    CHECK(!ml_keep_valid(set, ML_KEEP_PEERS_MAX + 1), "one more");
+
+    reset();
+    peer(0, "control-host.tail1.ts.net", 0x64400001, false);
+    peer(1, "laptop.tail1.ts.net", 0x64400009, false);
+    memset(held, 0xff, sizeof held);  /* whatever was there */
+    helds = 0;
+    keeps = 0;
+    keep_address(0x64400001);
+    keep_name("laptop");
+    /* Peers the table holds: kept, in place, and nothing to fetch */
+    CHECK(!replace_kept(true), "held peers ask for no fetch");
+    CHECK(helds == 2 && held[0].vpn_ip == 0x64400001 && held[0].name[0] == '\0', "the address kept");
+    CHECK(held[1].vpn_ip == 0 && strcmp(held[1].name, "laptop") == 0, "the name kept");
+    const microlink_keep_t none = {0};
+    for (int i = 2; i < ML_KEEP_PEERS_MAX; i++) {
+        CHECK(memcmp(&held[i], &none, sizeof none) == 0, "entry %d is empty", i);
+    }
+    CHECK(held[1].name[7] == '\0' && held[1].name[63] == '\0', "nothing after a name");
+    /* A peer the table lacks, named for the first time: the map is fetched */
+    keep_name("build");
+    CHECK(replace_kept(true), "a new name the table lacks");
+    /* ... once: the same set named again asks for nothing, however often */
+    for (int i = 0; i < 3; i++) {
+        CHECK(!replace_kept(true), "the same set, call %d", i);
+    }
+    /* ... and a name that stands for no peer does not make the next
+     * change a fetch: only what is newly named counts */
+    keep_address(0x64400009);  /* laptop's, which the table holds */
+    CHECK(!replace_kept(true), "a held peer added beside a missing one");
+    keep_address(0x64400077);
+    CHECK(replace_kept(true), "a new address the table lacks");
+    CHECK(!replace_kept(true), "and again: nothing");
+    /* The same name in another case is the same name */
+    keeps = 2;
+    keep_name("BUILD");
+    keep_address(0x64400009);
+    keep_address(0x64400077);
+    CHECK(!replace_kept(true), "a name in another case");
+    CHECK(strcmp(held[2].name, "BUILD") == 0, "kept as it is named now");
+    /* An address and a name are different entries, even for one peer */
+    keeps = 0;
+    keep_name("laptop");
+    keep_name("missing-host");
+    helds = 0;
+    CHECK(replace_kept(true), "named from nothing, one missing");
+    keeps = 1;
+    CHECK(!replace_kept(true), "fewer peers named");
+    CHECK(helds == 1 && held[1].name[0] == '\0' && held[1].vpn_ip == 0, "the entry dropped is empty");
+    keep_name("missing-host");
+    CHECK(replace_kept(true), "named again after it was dropped: new again");
+    /* Before the first map is applied nothing is fetched: it is on its way */
+    helds = 0;
+    CHECK(!replace_kept(false), "no map applied yet");
+    CHECK(helds == 2, "but the set is kept");
+    /* A peer that leaves the table is not fetched for by naming it again */
+    peers[1].active = false;
+    CHECK(!replace_kept(true), "a named peer gone missing: the same set asks nothing");
+    /* A cached peer answers to no name, and to its address */
+    peer(1, "laptop", 0x64400009, true);
+    keeps = 0;
+    keep_address(0x64400009);
+    CHECK(!replace_kept(true), "a cached peer holds its address");
+    keeps = 0;
+    helds = 0;
 }
 
 /* A full map of more peers than the table has slots, applied in a random
@@ -574,7 +654,6 @@ static void random_full_tables(void) {
             }
             CHECK(!node_kept[n] || held, "round %d: kept node %d has no slot", round, n);
         }
-        CHECK(!ml_keep_missing(peers, count, keep, keeps, own), "round %d: a kept peer missing", round);
     }
     /* The sweep reaches both ends of the rule */
     CHECK(evictions > 5000 && left_out > 20000, "evictions %d, left out %d", evictions, left_out);
@@ -588,6 +667,7 @@ int main(void) {
     full_maps();
     names();
     kept_peers();
+    naming_the_kept_peers();
     random_full_tables();
     if (failures) {
         printf("%d failed\n", failures);

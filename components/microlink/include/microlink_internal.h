@@ -398,6 +398,8 @@ struct microlink_s {
      * needs a slot — both under peers_lock */
     microlink_keep_t keep[ML_KEEP_PEERS_MAX];
     int keep_count;
+    /* A kept peer needs the full map, and it could not be asked for yet */
+    bool keep_fetch_due;
     /* Guards what another task reads of the peer table — a slot's address,
      * name, keys, active and cached flags, WireGuard index, best endpoint
      * and direct path, peer_count — and own_domain and the kept peers: their
