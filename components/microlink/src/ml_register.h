@@ -148,6 +148,16 @@ bool ml_register_identity_save(const ml_identity_plan_t *plan,
  */
 bool ml_register_address_ipv4(const char *addr, uint32_t *ip);
 
+/**
+ * @brief A node's IPv4 address: the first of its Addresses that is one
+ * @param next The list's next member into *addr — its string, or NULL for a
+ *        member that is not a string; false at the list's end
+ * @param ctx Passed to `next`
+ * @return The address, host order; 0 when the list has none — an empty
+ *         list, IPv6 addresses only, members that are not addresses
+ */
+uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void *ctx);
+
 /* One HTTP/2 frame of a run received */
 typedef struct {
     uint8_t type;

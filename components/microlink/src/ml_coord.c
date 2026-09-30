@@ -123,18 +123,22 @@ static void note_own_domain(microlink_t *ml, const cJSON *node) {
     ml_peers_unlock(ml);
 }
 
+/* A node's Addresses, member by member, for ml_register_first_ipv4 */
+static bool next_address(void *ctx, const char **addr) {
+    const cJSON **at = ctx;
+    if (*at == NULL) return false;
+    *addr = cJSON_IsString(*at) ? (*at)->valuestring : NULL;
+    *at = (*at)->next;
+    return true;
+}
+
 /* A node's tailnet IPv4 address: the first of its Addresses that is one
- * ("100.64.0.1/32"), host order; 0 when it has none ("Addresses": null) */
+ * ("100.64.0.1/32"), host order; 0 when it has none ("Addresses": null, an
+ * empty list, IPv6 addresses only) or Addresses is no list */
 static uint32_t node_ipv4(const cJSON *node) {
     const cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
-    const cJSON *addr;
-    cJSON_ArrayForEach(addr, addresses) {
-        uint32_t ip;
-        if (cJSON_IsString(addr) && ml_register_address_ipv4(addr->valuestring, &ip)) {
-            return ip;
-        }
-    }
-    return 0;
+    const cJSON *at = cJSON_IsArray(addresses) ? addresses->child : NULL;
+    return ml_register_first_ipv4(next_address, &at);
 }
 
 /* The control server's health messages in a MapResponse: among them why it
@@ -1326,18 +1330,8 @@ static void parse_peers_from_map_response(microlink_t *ml, cJSON *root) {
             hex_to_bytes(hex, update->disco_key, 32);
         }
 
-        /* VPN IP from Addresses */
-        cJSON *addresses = cJSON_GetObjectItem(peer, "Addresses");
-        if (addresses && cJSON_GetArraySize(addresses) > 0) {
-            const char *addr = cJSON_GetArrayItem(addresses, 0)->valuestring;
-            if (addr) {
-                unsigned a, b, c, d;
-                /* Handle CIDR notation (e.g., "100.64.1.2/32") */
-                if (sscanf(addr, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-                    update->vpn_ip = (a << 24) | (b << 16) | (c << 8) | d;
-                }
-            }
-        }
+        /* VPN IP from Addresses: read as the node's own is */
+        update->vpn_ip = node_ipv4(peer);
 
         /* DERP region — try modern HomeDERP (int) first, then legacy DERP string */
         cJSON *peer_home_derp = cJSON_GetObjectItem(peer, "HomeDERP");
@@ -1872,7 +1866,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     log_health(map_json);
     const uint32_t node_ip = node_ipv4(cJSON_GetObjectItem(map_json, "Node"));
     if (node_ip == 0) {
-        ESP_LOGW(TAG, "MapResponse gives this node no tailnet address");
+        ESP_LOGW(TAG, "MapResponse gives this node no IPv4 address");
         cJSON_Delete(map_json);
         free(resp_buf);
         return -1;
@@ -1883,8 +1877,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         cJSON *node = cJSON_GetObjectItem(map_json, "Node");
         if (node) {
             note_own_domain(ml, node);
-            /* Extract VPN IP if not already set */
-            if (ml->vpn_ip == 0) {
+            /* The map's address is the node's, whatever an earlier session gave */
+            if (ml->vpn_ip != node_ip) {
                 ml->vpn_ip = node_ip;
                 char ip_str[16];
                 microlink_ip_to_str(ml->vpn_ip, ip_str);

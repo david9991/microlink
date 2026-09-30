@@ -131,6 +131,17 @@ bool ml_register_address_ipv4(const char *addr, uint32_t *ip) {
     return true;
 }
 
+uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void *ctx) {
+    const char *addr;
+    while (next(ctx, &addr)) {
+        uint32_t ip;
+        if (ml_register_address_ipv4(addr, &ip)) {
+            return ip;
+        }
+    }
+    return 0;
+}
+
 /* HPACK's integer (RFC 7541 5.1) with an n-bit prefix, from *pos; -1 if cut short or too large */
 static long hpack_int(const uint8_t *p, size_t len, size_t *pos, int prefix_bits) {
     if (*pos >= len) return -1;

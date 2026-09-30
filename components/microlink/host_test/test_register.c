@@ -651,6 +651,44 @@ static void a_save_cut_short_leaves_an_identity_the_next_start_completes(void) {
     CHECK(cut > 40, "saves cut short: %d", cut);
 }
 
+/* ---- a node's addresses ------------------------------------------------------ */
+
+typedef struct {
+    const char *const *members;
+    size_t count;
+    size_t at;
+} list_t;
+
+static bool list_next(void *ctx, const char **addr) {
+    list_t *l = ctx;
+    if (l->at >= l->count) return false;
+    *addr = l->members[l->at++];
+    return true;
+}
+
+static uint32_t first_ipv4(const char *const *members, size_t count) {
+    list_t l = {members, count, 0};
+    return ml_register_first_ipv4(list_next, &l);
+}
+
+static void read_every_list_of_addresses(void) {
+    const char *const v4_first[] = {"100.121.110.65/32", "fd7a:115c:a1e0::4a39:6e42/128"};
+    const char *const v6_first[] = {"fd7a:115c:a1e0::4a39:6e42/128", "100.121.110.65/32"};
+    const char *const v6_only[] = {"fd7a:115c:a1e0::4a39:6e42/128", "fd7a:115c:a1e0::1/128"};
+    /* NULL: a member that is not a string (a number, an object, a null) */
+    const char *const not_strings[] = {NULL, NULL};
+    const char *const after_others[] = {NULL, "", "256.1.1.1", "fd7a::1/128", "10.0.0.1/8", "10.0.0.2/8"};
+    CHECK(first_ipv4(v4_first, 2) == 0x64796e41, "IPv4 first");
+    CHECK(first_ipv4(v6_first, 2) == 0x64796e41, "IPv6 first");
+    CHECK(first_ipv4(v6_only, 2) == 0, "IPv6 only");
+    CHECK(first_ipv4(not_strings, 2) == 0, "no strings");
+    CHECK(first_ipv4(NULL, 0) == 0, "an empty list, and none at all");
+    CHECK(first_ipv4(after_others, 6) == 0x0a000001, "the first that is one");
+    /* A list is read no further than its first address */
+    list_t l = {after_others, 6, 0};
+    CHECK(ml_register_first_ipv4(list_next, &l) == 0x0a000001 && l.at == 5, "read to %zu", l.at);
+}
+
 static void read_every_address(void) {
     struct {
         const char *addr;
@@ -699,11 +737,25 @@ static void read_every_address(void) {
         CHECK(!ok || ip == (len == 13 ? 0x64796e06u : 0x64796e41u), "prefix %zu: 0x%08x", len, ip);
         free(cut);
     }
+    /* Round trip: any address, written as the control server writes one,
+     * with any prefix length or none, reads back as itself */
+    for (int round = 0; round < 200000; round++) {
+        const uint32_t want = next() ^ (next() << 16);
+        const unsigned prefix = next() % 34;  /* 33: none */
+        char text[24];
+        int n = snprintf(text, sizeof text, "%u.%u.%u.%u", (unsigned)(want >> 24),
+                         (unsigned)(want >> 16 & 0xff), (unsigned)(want >> 8 & 0xff),
+                         (unsigned)(want & 0xff));
+        if (prefix <= 32) snprintf(text + n, sizeof text - (size_t)n, "/%u", prefix);
+        uint32_t got = ~want;
+        CHECK(ml_register_address_ipv4(text, &got) && got == want, "%s: 0x%08x", text, (unsigned)got);
+    }
 }
 
 int main(void) {
     classify_every_reply();
     read_every_address();
+    read_every_list_of_addresses();
     hostinfo_os_is_fixed_with_the_keys();
     an_identity_that_cannot_be_read_is_left_alone();
     a_save_cut_short_leaves_an_identity_the_next_start_completes();
