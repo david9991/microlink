@@ -179,27 +179,40 @@ bool ml_register_address_ipv4(const char *addr, uint32_t *ip);
  */
 uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void *ctx);
 
+/**
+ * @brief Whether a map request's response may be read as a map
+ * @param status Its final :status (ml_h2_final_status); 0 when none could be
+ *        read
+ * @return true for 2xx — and for 0, where the body decides; false for any
+ *         other status: an error's body is not a map, whatever JSON it is
+ */
+bool ml_register_map_status_ok(int status);
+
 /* What a map says of the node's own address */
 typedef enum {
     ML_MAP_ADDRESS_GIVEN,      /* the map gives it */
     ML_MAP_ADDRESS_UNCHANGED,  /* an update that does not speak of it */
     ML_MAP_ADDRESS_NONE,       /* the map gives the node none: it is not served */
+    ML_MAP_ADDRESS_NO_MAP,     /* a first map with no Node: it is no map, and says nothing */
 } ml_map_address_t;
 
 /**
  * @brief What a map says of the node's own address
  * @param first The first map of a session, which is the node's whole state;
  *        else a streaming update, which carries only what changed
- * @param listed The map has a Node with an Addresses member, whatever it holds
+ * @param node The map has a Node object
+ * @param listed That Node has an Addresses member, whatever it holds
  * @param ip The first IPv4 address of that list (ml_register_first_ipv4), 0 for none
  *
  * A node the control server does not serve — one whose OS changed since it
  * last connected, say — is sent a Node with "Addresses": null. A first map
- * without an address is that, however it says it. An update says it only
- * with a list that has no IPv4 address: an update with no Node, or a Node
- * with no Addresses, leaves the address as it was.
+ * whose Node has no address is that, however it says it; one with no Node
+ * at all is not a map — an error's body, a proxy's page — and says nothing
+ * of the node: the fetch failed. An update says it only with a Node whose
+ * list has no IPv4 address: an update with no Node, or a Node with no
+ * Addresses, leaves the address as it was.
  */
-ml_map_address_t ml_register_map_address(bool first, bool listed, uint32_t ip);
+ml_map_address_t ml_register_map_address(bool first, bool node, bool listed, uint32_t ip);
 
 /* The longest wait before the control server is connected to again */
 #define ML_CTRL_BACKOFF_MAX_MS          30000

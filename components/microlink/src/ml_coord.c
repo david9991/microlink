@@ -145,8 +145,10 @@ static uint32_t node_ipv4(const cJSON *node) {
  * *ip is the address when it gives one */
 static ml_map_address_t map_address(const cJSON *map, bool first, uint32_t *ip) {
     const cJSON *node = cJSON_GetObjectItem(map, "Node");
-    *ip = node_ipv4(node);
-    return ml_register_map_address(first, cJSON_GetObjectItem(node, "Addresses") != NULL, *ip);
+    const bool is_node = cJSON_IsObject(node);
+    *ip = is_node ? node_ipv4(node) : 0;
+    return ml_register_map_address(first, is_node,
+                                   is_node && cJSON_GetObjectItem(node, "Addresses") != NULL, *ip);
 }
 
 /* The most of the control server's health messages one map has logged */
@@ -1818,7 +1820,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             break;
         }
 
-        if (f_type == H2_FRAME_DATA && f_len > 0) {
+        /* The map's body: the DATA frames of its own stream, 3 */
+        if (f_type == H2_FRAME_DATA && f_stream == 3 && f_len > 0) {
             if (json_total + f_len < ML_JSON_BUFFER_SIZE) {
                 memcpy(resp_buf + json_total, h2_recv + fpos, f_len);
                 json_total += f_len;
@@ -1827,6 +1830,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
 
         fpos += f_len;
     }
+    /* Its status: an error's body is no map, whatever JSON it carries */
+    const int map_status = ml_h2_final_status(h2_recv, h2_total, 3);
     free(h2_recv);
 
     /* Send connection-level WINDOW_UPDATE to replenish HTTP/2 flow control.
@@ -1839,13 +1844,19 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         ESP_LOGI(TAG, "Sent H2 WINDOW_UPDATE: %d bytes (connection level)", (int)json_total);
     }
 
+    if (!ml_register_map_status_ok(map_status)) {
+        ESP_LOGW(TAG, "MapRequest answered with status %d: no map", map_status);
+        free(resp_buf);
+        return -1;
+    }
+
     if (json_total == 0) {
         ESP_LOGW(TAG, "Empty MapResponse");
         free(resp_buf);
         return -1;
     }
 
-    ESP_LOGI(TAG, "MapResponse JSON: %d bytes", (int)json_total);
+    ESP_LOGI(TAG, "MapResponse JSON: %d bytes (status %d)", (int)json_total, map_status);
 
     /* Hex dump first 32 bytes for debugging prefix issues */
     {
@@ -1920,7 +1931,15 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
      * null, no peers, no DERP map), and says why in Health. */
     log_health(map_json);
     uint32_t node_ip;
-    if (map_address(map_json, true, &node_ip) == ML_MAP_ADDRESS_NONE) {
+    const ml_map_address_t address = map_address(map_json, true, &node_ip);
+    if (address == ML_MAP_ADDRESS_NO_MAP) {
+        /* JSON, and no map: it says nothing of the node. The fetch failed. */
+        ESP_LOGW(TAG, "MapResponse has no Node: it is no map");
+        cJSON_Delete(map_json);
+        free(resp_buf);
+        return -1;
+    }
+    if (address == ML_MAP_ADDRESS_NONE) {
         ml->map = ML_MAP_UNSERVED;
         ESP_LOGW(TAG, "MapResponse gives this node no IPv4 address: the control server does "
                       "not serve it");

@@ -723,16 +723,36 @@ static void what_a_map_says_of_the_address(void) {
     /* An address is an address, in a first map and in an update */
     for (int first = 0; first < 2; first++) {
         for (int listed = 0; listed < 2; listed++) {
-            CHECK(ml_register_map_address(first, listed, 0x64796e41) == ML_MAP_ADDRESS_GIVEN,
+            CHECK(ml_register_map_address(first, true, listed, 0x64796e41) == ML_MAP_ADDRESS_GIVEN,
                   "first %d, listed %d: an address", first, listed);
         }
     }
-    /* A first map without one: the node is not served, however it is said */
-    CHECK(ml_register_map_address(true, true, 0) == ML_MAP_ADDRESS_NONE, "first map, empty list");
-    CHECK(ml_register_map_address(true, false, 0) == ML_MAP_ADDRESS_NONE, "first map, no list");
-    /* An update: only a list without an address takes it away */
-    CHECK(ml_register_map_address(false, true, 0) == ML_MAP_ADDRESS_NONE, "update, empty list");
-    CHECK(ml_register_map_address(false, false, 0) == ML_MAP_ADDRESS_UNCHANGED, "update, no list");
+    /* A first map whose Node has none: the node is not served, however it is said */
+    CHECK(ml_register_map_address(true, true, true, 0) == ML_MAP_ADDRESS_NONE, "first map, empty list");
+    CHECK(ml_register_map_address(true, true, false, 0) == ML_MAP_ADDRESS_NONE, "first map, no list");
+    /* A first map with no Node is no map: not "unserved", whatever else it
+     * is given as — an error's JSON body says nothing of the node */
+    for (int listed = 0; listed < 2; listed++) {
+        CHECK(ml_register_map_address(true, false, listed, 0) == ML_MAP_ADDRESS_NO_MAP,
+              "first map, no Node");
+        CHECK(ml_register_map_address(true, false, listed, 0x64796e41) == ML_MAP_ADDRESS_NO_MAP,
+              "first map, no Node, an address from nowhere");
+    }
+    /* An update: only a Node's list without an address takes it away */
+    CHECK(ml_register_map_address(false, true, true, 0) == ML_MAP_ADDRESS_NONE, "update, empty list");
+    CHECK(ml_register_map_address(false, true, false, 0) == ML_MAP_ADDRESS_UNCHANGED,
+          "update, a Node with no list");
+    CHECK(ml_register_map_address(false, false, false, 0) == ML_MAP_ADDRESS_UNCHANGED,
+          "update, no Node");
+    CHECK(ml_register_map_address(false, false, true, 0) == ML_MAP_ADDRESS_UNCHANGED,
+          "update, no Node, whatever else is said");
+
+    /* A map request's status: 2xx is a map to read, and so is a status that
+     * could not be read, where the body decides; anything else is none */
+    for (int status = 0; status < 700; status++) {
+        const bool ok = status == 0 || (status >= 200 && status <= 299);
+        CHECK(ml_register_map_status_ok(status) == ok, "status %d", status);
+    }
 }
 
 static void waits_before_a_reconnect(void) {

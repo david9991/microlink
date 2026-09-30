@@ -155,7 +155,14 @@ uint32_t ml_register_first_ipv4(bool (*next)(void *ctx, const char **addr), void
     return 0;
 }
 
-ml_map_address_t ml_register_map_address(bool first, bool listed, uint32_t ip) {
+bool ml_register_map_status_ok(int status) {
+    return status == 0 || (status >= 200 && status <= 299);
+}
+
+ml_map_address_t ml_register_map_address(bool first, bool node, bool listed, uint32_t ip) {
+    if (!node) {
+        return first ? ML_MAP_ADDRESS_NO_MAP : ML_MAP_ADDRESS_UNCHANGED;
+    }
     if (ip != 0) {
         return ML_MAP_ADDRESS_GIVEN;
     }
