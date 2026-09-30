@@ -524,12 +524,16 @@ static int add_peer(microlink_t *ml, const ml_peer_update_t *update) {
         p->endpoints[i].is_ipv6 = update->endpoints[i].is_ipv6;
     }
 
-    /* Initialize DISCO rate limiting state */
+    /* Initialize DISCO rate limiting state. When a known peer last
+     * answered and was last sent to stays: it says which peer gives way
+     * when a kept one needs a slot, and a full map lists every peer. */
     p->last_ping_sent_ms = 0;
-    p->last_pong_recv_ms = 0;
     p->trust_until_ms = 0;
-    p->last_send_ms = 0;
     p->last_upgrade_ms = 0;
+    if (!known) {
+        p->last_pong_recv_ms = 0;
+        p->last_send_ms = 0;
+    }
     p->has_direct_path = false;
     p->best_ip = 0;
     p->best_port = 0;
