@@ -30,6 +30,16 @@ microlink_registration_t ml_register_classify(const ml_register_reply_t *reply) 
     return ML_REGISTRATION_AUTHORIZED;
 }
 
+const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const char *configured) {
+    if (new_keys) {
+        return configured;
+    }
+    if (stored != NULL && stored[0] != '\0') {
+        return stored;
+    }
+    return ML_HOSTINFO_OS_UNSTORED;
+}
+
 /* HPACK's integer (RFC 7541 5.1) with an n-bit prefix, from *pos; -1 if cut short or too large */
 static long hpack_int(const uint8_t *p, size_t len, size_t *pos, int prefix_bits) {
     if (*pos >= len) return -1;

@@ -1,6 +1,7 @@
 /*
  * Host tests of what a registration was answered (ml_register.c): the
- * classification of a reply, and the :status of its HEADERS frame.
+ * classification of a reply, the :status of its HEADERS frame, and the OS a
+ * node's registrations report.
  * Run by run.sh with the host's C compiler.
  */
 #include <stdio.h>
@@ -447,8 +448,29 @@ static void read_every_frames_prefix(void) {
     }
 }
 
+static void hostinfo_os_is_fixed_with_the_keys(void) {
+    const char *configured = "freertos";
+    /* New keys report what the build says, whatever was stored before them */
+    const char *stored_before[] = {NULL, "", "linux", "freertos", "windows"};
+    for (size_t i = 0; i < sizeof stored_before / sizeof stored_before[0]; i++) {
+        CHECK(ml_register_hostinfo_os(true, stored_before[i], configured) == configured,
+              "new keys, stored %s", stored_before[i] ? stored_before[i] : "(none)");
+    }
+    /* Keys already made report the OS stored with them, not the build's */
+    const char *stored = "freertos";
+    CHECK(ml_register_hostinfo_os(false, stored, "linux") == stored, "stored freertos");
+    const char *other = "zephyr";
+    CHECK(ml_register_hostinfo_os(false, other, configured) == other, "stored zephyr");
+    /* ...and keys with none stored report the OS every build reported before
+     * one was: a node enrolled then is held to it */
+    CHECK(strcmp(ml_register_hostinfo_os(false, NULL, configured), "linux") == 0, "none stored");
+    CHECK(strcmp(ml_register_hostinfo_os(false, "", configured), "linux") == 0, "empty stored");
+    CHECK(strcmp(ML_HOSTINFO_OS_UNSTORED, "linux") == 0, "the unstored OS");
+}
+
 int main(void) {
     classify_every_reply();
+    hostinfo_os_is_fixed_with_the_keys();
     read_every_status();
     read_every_prefix();
     read_random_payloads();

@@ -51,6 +51,25 @@ microlink_registration_t ml_register_classify(const ml_register_reply_t *reply);
  */
 int ml_h2_response_status(const uint8_t *payload, size_t len, uint8_t flags);
 
+/* The OS a node reported before one was stored with its keys: every
+ * MicroLink build until then reported "linux" */
+#define ML_HOSTINFO_OS_UNSTORED "linux"
+
+/**
+ * @brief The OS a node reports to the control server (Hostinfo.OS)
+ * @param new_keys The node's machine key was made by this start
+ * @param stored The OS stored with its keys; NULL or "" when none was
+ * @param configured The OS a node with new keys reports (ML_HOSTINFO_OS)
+ *
+ * The control server holds a node to the OS it last connected with: a node
+ * that reports another is answered with a map that gives it no address and no
+ * peers, and the health message "node OS changed since last connection". So
+ * a node's OS is fixed with its keys. New keys report `configured`, which is
+ * stored beside them; keys already made report the OS stored with them, or,
+ * when none was, ML_HOSTINFO_OS_UNSTORED — the OS they were registered with.
+ */
+const char *ml_register_hostinfo_os(bool new_keys, const char *stored, const char *configured);
+
 /* One HTTP/2 frame of a run received */
 typedef struct {
     uint8_t type;

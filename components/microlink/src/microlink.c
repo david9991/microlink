@@ -7,6 +7,7 @@
  */
 
 #include "microlink_internal.h"
+#include "ml_register.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -36,6 +37,7 @@ static const char *TAG = "microlink";
 #define NVS_KEY_DISCO_PRI   "disco_pri"
 #define NVS_KEY_DISCO_PUB   "disco_pub"
 #define NVS_KEY_AUTHORIZED  "authorized"   /* u8 1: a registration was authorised */
+#define NVS_KEY_OS          "hostinfo_os"  /* str: the OS the keys report (Hostinfo.OS) */
 
 /* X25519 from x25519.h */
 #include "x25519.h"
@@ -52,6 +54,15 @@ static void generate_keypair(uint8_t *private_key, uint8_t *public_key) {
     x25519_base(public_key, private_key, 1);
 }
 
+/* The OS the node reports, fixed with its keys (ml_register_hostinfo_os) */
+static void set_hostinfo_os(microlink_t *ml, bool new_keys, const char *stored) {
+    snprintf(ml->hostinfo_os, sizeof(ml->hostinfo_os), "%s",
+             ml_register_hostinfo_os(new_keys, stored, CONFIG_ML_HOSTINFO_OS));
+    ESP_LOGI(TAG, "Reports OS \"%s\"%s", ml->hostinfo_os,
+             new_keys || (stored && stored[0]) ? ""
+                                               : " (its keys were registered before an OS was stored with them)");
+}
+
 static esp_err_t load_or_generate_keys(microlink_t *ml) {
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
@@ -60,16 +71,19 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
         generate_keypair(ml->machine_private_key, ml->machine_public_key);
         generate_keypair(ml->wg_private_key, ml->wg_public_key);
         generate_keypair(ml->disco_private_key, ml->disco_public_key);
+        set_hostinfo_os(ml, true, NULL);
         return ESP_OK;
     }
 
     size_t key_len = 32;
     bool need_save = false;
+    bool new_machine_key = false;
 
     /* Machine key */
     if (nvs_get_blob(nvs, NVS_KEY_MACHINE_PRI, ml->machine_private_key, &key_len) != ESP_OK) {
         generate_keypair(ml->machine_private_key, ml->machine_public_key);
         need_save = true;
+        new_machine_key = true;
         ESP_LOGI(TAG, "Generated new machine key");
     } else {
         key_len = 32;
@@ -98,6 +112,21 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
         nvs_get_blob(nvs, NVS_KEY_DISCO_PUB, ml->disco_public_key, &key_len);
     }
 
+    /* The OS these keys report: stored with them when they are new, else
+     * read back (none stored: keys made before it was) */
+    char stored_os[sizeof(ml->hostinfo_os)] = "";
+    if (!new_machine_key) {
+        size_t os_len = sizeof(stored_os);
+        err = nvs_get_str(nvs, NVS_KEY_OS, stored_os, &os_len);
+        if (err != ESP_OK) {
+            stored_os[0] = '\0';
+            if (err != ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGW(TAG, "The OS stored with the keys is unreadable: %s", esp_err_to_name(err));
+            }
+        }
+    }
+    set_hostinfo_os(ml, new_machine_key, stored_os);
+
     if (need_save) {
         nvs_set_blob(nvs, NVS_KEY_MACHINE_PRI, ml->machine_private_key, 32);
         nvs_set_blob(nvs, NVS_KEY_MACHINE_PUB, ml->machine_public_key, 32);
@@ -107,6 +136,10 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
         nvs_set_blob(nvs, NVS_KEY_DISCO_PUB, ml->disco_public_key, 32);
         /* New keys: whatever was authorised was the old ones */
         nvs_erase_key(nvs, NVS_KEY_AUTHORIZED);
+        if (new_machine_key && nvs_set_str(nvs, NVS_KEY_OS, ml->hostinfo_os) != ESP_OK) {
+            /* Read back as none stored: the next start reports "linux" */
+            ESP_LOGE(TAG, "The OS \"%s\" is not stored with the new keys", ml->hostinfo_os);
+        }
         nvs_commit(nvs);
         ESP_LOGI(TAG, "Keys saved to NVS");
     } else {

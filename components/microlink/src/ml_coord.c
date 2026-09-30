@@ -806,7 +806,7 @@ static int do_h2_preface(microlink_t *ml, ml_noise_state_t *noise) {
 #define HOSTINFO_GOARCH "unknown"
 #endif
 
-/* A Hostinfo object with the node's name, OS (CONFIG_ML_HOSTINFO_OS), OS
+/* A Hostinfo object with the node's name, OS (the one fixed with its keys), OS
  * version ("ESP-IDF <version> (<target>)") and architecture; each request adds
  * its own NetInfo. NULL when out of memory. */
 static cJSON *hostinfo_new(microlink_t *ml) {
@@ -819,7 +819,7 @@ static cJSON *hostinfo_new(microlink_t *ml) {
     snprintf(os_version, sizeof(os_version), "ESP-IDF %s (%s)", esp_get_idf_version(),
              CONFIG_IDF_TARGET);
     cJSON_AddStringToObject(hostinfo, "Hostname", dev_name);
-    cJSON_AddStringToObject(hostinfo, "OS", CONFIG_ML_HOSTINFO_OS);
+    cJSON_AddStringToObject(hostinfo, "OS", ml->hostinfo_os);
     cJSON_AddStringToObject(hostinfo, "OSVersion", os_version);
     cJSON_AddStringToObject(hostinfo, "GoArch", HOSTINFO_GOARCH);
     return hostinfo;

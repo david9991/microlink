@@ -76,11 +76,16 @@ menu "MicroLink V2 Configuration"
         string "OS this node reports to the control server"
         default "freertos"
         help
-            Hostinfo.OS in every request to the control server: what the
-            admin console and `tailscale status` show for this node, and
-            what device-posture rules match. The OS version (ESP-IDF's
-            version and the target) and the architecture are taken from
-            the build.
+            Hostinfo.OS in every request to the control server of a node
+            whose keys this build makes: what the admin console and
+            `tailscale status` show for it, and what device-posture rules
+            match. It is stored with the keys, and a node reports the OS
+            stored with its keys ever after, whatever a later build says:
+            the control server gives a node that reports an OS other than
+            the one it last connected with no address and no peers. Keys
+            made before an OS was stored report "linux". The OS version
+            (ESP-IDF's version and the target) and the architecture are
+            taken from the build.
 
     config ML_MAX_PEERS
         int "Maximum simultaneous WireGuard peers"
